@@ -79,9 +79,9 @@ struct input_bits_t {
     bool down: true;
 };
 
-static input_bits_t keyboard = { false, false, false, false, false, false, false, false };
-static input_bits_t gamepad1_bits = { false, false, false, false, false, false, false, false };
-static input_bits_t gamepad2_bits = { false, false, false, false, false, false, false, false };
+input_bits_t keyboard_bits = { false, false, false, false, false, false, false, false };
+input_bits_t gamepad1_bits = { false, false, false, false, false, false, false, false };
+input_bits_t gamepad2_bits = { false, false, false, false, false, false, false, false };
 
 bool swap_ab = false;
 
@@ -91,20 +91,20 @@ void nespad_tick() {
     uint8_t controls_state = 0;
 
     if (settings.swap_ab) {
-        gamepad1_bits.b = keyboard.a || (nespad_state & DPAD_A) != 0;
-        gamepad1_bits.a = keyboard.b || (nespad_state & DPAD_B) != 0;
+        gamepad1_bits.b = keyboard_bits.a || (nespad_state & DPAD_A) != 0;
+        gamepad1_bits.a = keyboard_bits.b || (nespad_state & DPAD_B) != 0;
     } else {
-        gamepad1_bits.a = keyboard.a || (nespad_state & DPAD_A) != 0;
-        gamepad1_bits.b = keyboard.b || (nespad_state & DPAD_B) != 0;
+        gamepad1_bits.a = keyboard_bits.a || (nespad_state & DPAD_A) != 0;
+        gamepad1_bits.b = keyboard_bits.b || (nespad_state & DPAD_B) != 0;
 
     }
 
-    gamepad1_bits.select = keyboard.select || (nespad_state & DPAD_SELECT) != 0;
-    gamepad1_bits.start = keyboard.start || (nespad_state & DPAD_START) != 0;
-    gamepad1_bits.up = keyboard.up || (nespad_state & DPAD_UP) != 0;
-    gamepad1_bits.down = keyboard.down || (nespad_state & DPAD_DOWN) != 0;
-    gamepad1_bits.left = keyboard.left || (nespad_state & DPAD_LEFT) != 0;
-    gamepad1_bits.right = keyboard.right || (nespad_state & DPAD_RIGHT) != 0;
+    gamepad1_bits.select = keyboard_bits.select || (nespad_state & DPAD_SELECT) != 0;
+    gamepad1_bits.start = keyboard_bits.start || (nespad_state & DPAD_START) != 0;
+    gamepad1_bits.up = keyboard_bits.up || (nespad_state & DPAD_UP) != 0;
+    gamepad1_bits.down = keyboard_bits.down || (nespad_state & DPAD_DOWN) != 0;
+    gamepad1_bits.left = keyboard_bits.left || (nespad_state & DPAD_LEFT) != 0;
+    gamepad1_bits.right = keyboard_bits.right || (nespad_state & DPAD_RIGHT) != 0;
 
 
     if (gamepad1_bits.up) controls_state|=0x08;
@@ -128,9 +128,9 @@ static bool isInReport(hid_keyboard_report_t const* report, const unsigned char 
     return false;
 }
 
-static volatile bool altPressed = false;
-static volatile bool ctrlPressed = false;
-static volatile uint8_t fxPressedV = 0;
+volatile bool altPressed = false;
+volatile bool ctrlPressed = false;
+volatile uint8_t fxPressedV = 0;
 
 void
 __not_in_flash_func(process_kbd_report)(hid_keyboard_report_t const* report, hid_keyboard_report_t const* prev_report) {
@@ -139,21 +139,21 @@ __not_in_flash_func(process_kbd_report)(hid_keyboard_report_t const* report, hid
         printf("%2.2X", i);
     printf("\r\n");
      */
-    keyboard.start = isInReport(report, HID_KEY_ENTER) || isInReport(report, HID_KEY_KEYPAD_ENTER);
-    keyboard.select = isInReport(report, HID_KEY_BACKSPACE) || isInReport(report, HID_KEY_ESCAPE) || isInReport(report, HID_KEY_KEYPAD_ADD);
+    keyboard_bits.start = isInReport(report, HID_KEY_ENTER) || isInReport(report, HID_KEY_KEYPAD_ENTER);
+    keyboard_bits.select = isInReport(report, HID_KEY_BACKSPACE) || isInReport(report, HID_KEY_ESCAPE) || isInReport(report, HID_KEY_KEYPAD_ADD);
 
-    keyboard.a = isInReport(report, HID_KEY_Z) || isInReport(report, HID_KEY_O) || isInReport(report, HID_KEY_KEYPAD_0);
-    keyboard.b = isInReport(report, HID_KEY_X) || isInReport(report, HID_KEY_P) || isInReport(report, HID_KEY_KEYPAD_DECIMAL);
+    keyboard_bits.a = isInReport(report, HID_KEY_Z) || isInReport(report, HID_KEY_O) || isInReport(report, HID_KEY_KEYPAD_0);
+    keyboard_bits.b = isInReport(report, HID_KEY_X) || isInReport(report, HID_KEY_P) || isInReport(report, HID_KEY_KEYPAD_DECIMAL);
 
     bool b7 = isInReport(report, HID_KEY_KEYPAD_7);
     bool b9 = isInReport(report, HID_KEY_KEYPAD_9);
     bool b1 = isInReport(report, HID_KEY_KEYPAD_1);
     bool b3 = isInReport(report, HID_KEY_KEYPAD_3);
 
-    keyboard.up = b7 || b9 || isInReport(report, HID_KEY_ARROW_UP) || isInReport(report, HID_KEY_W) || isInReport(report, HID_KEY_KEYPAD_8);
-    keyboard.down = b1 || b3 || isInReport(report, HID_KEY_ARROW_DOWN) || isInReport(report, HID_KEY_S) || isInReport(report, HID_KEY_KEYPAD_2) || isInReport(report, HID_KEY_KEYPAD_5);
-    keyboard.left = b7 || b1 || isInReport(report, HID_KEY_ARROW_LEFT) || isInReport(report, HID_KEY_A) || isInReport(report, HID_KEY_KEYPAD_4);
-    keyboard.right = b9 || b3 || isInReport(report, HID_KEY_ARROW_RIGHT)  || isInReport(report, HID_KEY_D) || isInReport(report, HID_KEY_KEYPAD_6);
+    keyboard_bits.up = b7 || b9 || isInReport(report, HID_KEY_ARROW_UP) || isInReport(report, HID_KEY_W) || isInReport(report, HID_KEY_KEYPAD_8);
+    keyboard_bits.down = b1 || b3 || isInReport(report, HID_KEY_ARROW_DOWN) || isInReport(report, HID_KEY_S) || isInReport(report, HID_KEY_KEYPAD_2) || isInReport(report, HID_KEY_KEYPAD_5);
+    keyboard_bits.left = b7 || b1 || isInReport(report, HID_KEY_ARROW_LEFT) || isInReport(report, HID_KEY_A) || isInReport(report, HID_KEY_KEYPAD_4);
+    keyboard_bits.right = b9 || b3 || isInReport(report, HID_KEY_ARROW_RIGHT)  || isInReport(report, HID_KEY_D) || isInReport(report, HID_KEY_KEYPAD_6);
 
     altPressed = isInReport(report, HID_KEY_ALT_LEFT) || isInReport(report, HID_KEY_ALT_RIGHT);
     ctrlPressed = isInReport(report, HID_KEY_CONTROL_LEFT) || isInReport(report, HID_KEY_CONTROL_RIGHT);
@@ -902,7 +902,7 @@ void __time_critical_func(render_core)() {
 #endif
         tick = time_us_64();
 
-        // tuh_task();
+        tuh_task();
         // hid_app_task();
         tight_loop_contents();
     }

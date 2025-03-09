@@ -37,10 +37,11 @@ option(m1p2launcher "Enable m1p2-launcher support" OFF)
 endif()
 
 #set(m1p2launcher ON)
+#set(HWAY ON)
 #set(I2S ON)
 #set(TFT ON)
 #set(ILI9341 ON)
-#set(HDMI ON)
+set(HDMI ON)
 #set(TV ON)
 #set(SOFTTV ON)
 
@@ -178,41 +179,6 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
         hardware_flash
 
 		tinyusb_host tinyusb_board
-)
-
-target_compile_definitions(${PROJECT_NAME} PRIVATE
-		PICO_FLASH_SIZE_BYTES=16777216
-		# SDCARD
-		SDCARD_PIN_SPI0_CS=5
-		SDCARD_PIN_SPI0_SCK=2
-		SDCARD_PIN_SPI0_MOSI=3
-		SDCARD_PIN_SPI0_MISO=4
-
-		# PS2KBD
-		USE_PS2_KBD
-		PS2KBD_GPIO_FIRST=0
-
-		# NES Gamepad
-		USE_NESPAD
-		NES_GPIO_CLK=14
-		NES_GPIO_DATA=16
-		NES_GPIO_LAT=15
-
-		# VGA 8 pins starts from pin:
-		VGA_BASE_PIN=6
-
-		# HDMI 8 pins starts from pin:
-		HDMI_BASE_PIN=6
-
-		# TFT
-		TFT_CS_PIN=6
-		TFT_RST_PIN=8
-		TFT_LED_PIN=9
-		TFT_DC_PIN=10
-		TFT_DATA_PIN=12
-		TFT_CLK_PIN=13
-
-		SMS_SINGLE_FILE=1
 )
 
 target_link_options(${PROJECT_NAME} PRIVATE -Xlinker --print-memory-usage --data-sections --function-sections)
