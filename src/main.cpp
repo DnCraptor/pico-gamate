@@ -70,6 +70,11 @@ typedef struct __attribute__((__packed__)) {
     uint32_t rgb3;
 } SETTINGS;
 
+uint32_t rgb0;
+uint32_t rgb1;
+uint32_t rgb2;
+uint32_t rgb3;
+
 SETTINGS settings = {
     .version = 1,
     .swap_ab = false,
@@ -668,6 +673,10 @@ void load_config() {
         f_read(&file, &settings, sizeof(settings), &bytes_read);
         f_close(&file);
     }
+    rgb0 = settings.rgb0;
+    rgb1 = settings.rgb1;
+    rgb2 = settings.rgb2;
+    rgb3 = settings.rgb3;
 }
 
 void save_config() {
@@ -711,7 +720,8 @@ const MenuItem menu_items[] = {
         {},
         { "Ghosting pix: %i ", INT, &settings.ghosting, nullptr, 6 }, // 6 == shift 1, 5->2, 4->3, 3->4, 2->5, 1->6, 0->7
         { "Palette: %s ", ARRAY, &settings.palette, nullptr, count_of(palettes), {
-                  "DEFAULT          "
+                  "GREEN-ORANGE     "
+                , "DEFAULT          "
                 , "BLACK & WHITE    "
                 , "AMBER            "
                 , "GREEN            "
@@ -744,10 +754,10 @@ const MenuItem menu_items[] = {
                 , "TV-LINK          "
                 , "CUSTOM           "
          }},
-        { "RGB0: %06Xh ", HEX, &settings.rgb0, nullptr, 0xFFFFFF },
-        { "RGB1: %06Xh ", HEX, &settings.rgb1, nullptr, 0xFFFFFF },
-        { "RGB2: %06Xh ", HEX, &settings.rgb2, nullptr, 0xFFFFFF },
-        { "RGB3: %06Xh ", HEX, &settings.rgb3, nullptr, 0xFFFFFF },
+        { "RGB0: %06Xh ", HEX, &rgb0, nullptr, 0xFFFFFF },
+        { "RGB1: %06Xh ", HEX, &rgb1, nullptr, 0xFFFFFF },
+        { "RGB2: %06Xh ", HEX, &rgb2, nullptr, 0xFFFFFF },
+        { "RGB3: %06Xh ", HEX, &rgb3, nullptr, 0xFFFFFF },
 #if VGA
         { "Keep aspect ratio: %s",     ARRAY, &settings.aspect_ratio,  nullptr, 1, {"NO ",       "YES"}},
 #endif
@@ -778,27 +788,28 @@ const MenuItem menu_items[] = {
 
 static inline void update_palette() {
     if (count_of(palettes) <= settings.palette) {
-        graphics_set_palette(0, settings.rgb0);
-        graphics_set_palette(1, settings.rgb1);
-        graphics_set_palette(2, settings.rgb2);
-        graphics_set_palette(3, settings.rgb3);
+        rgb0 = settings.rgb0;
+        rgb1 = settings.rgb1;
+        rgb2 = settings.rgb2;
+        rgb3 = settings.rgb3;
     } else {
-        const uint8_t (&palette)[12] = palettes[settings.palette];
-        for (int i = 0; i < 4; ++i) {
-            int i3 = i * 3;
-            graphics_set_palette(
-                i,
-                RGB888(
-                    palette[i3],
-                    palette[i3+1],
-                    palette[i3+2]
-                )
-            );
-        }
+        const uint8_t* palette = palettes[settings.palette];
+        rgb0 = RGB888(palette[0], palette[1], palette[2]);
+        rgb1 = RGB888(palette[3], palette[4], palette[5]);
+        rgb2 = RGB888(palette[6], palette[7], palette[8]);
+        rgb3 = RGB888(palette[9], palette[10], palette[11]);
     }
+    graphics_set_palette(0, rgb0);
+    graphics_set_palette(1, rgb1);
+    graphics_set_palette(2, rgb2);
+    graphics_set_palette(3, rgb3);
 }
 
 void menu() {
+    #ifdef HWAY
+        SendAY(0);
+        SendAY(AY_Enable);
+    #endif
     bool exit = false;
     graphics_set_mode(TEXTMODE_DEFAULT);
     char footer[TEXTMODE_COLS];
@@ -822,6 +833,7 @@ void menu() {
                 color = 0x01;
                 bg_color = 0xFF;
             }
+            int pal = settings.palette;
             const MenuItem* item = &menu_items[i];
             if (i == current_item) {
                 switch (item->type) {
@@ -892,6 +904,9 @@ void menu() {
                     exit = item->callback();
                 }
             }
+            if (pal != settings.palette) {
+                update_palette();
+            }
             static char result[TEXTMODE_COLS];
             switch (item->type) {
                 case HEX:
@@ -950,7 +965,12 @@ void menu() {
 #else
     graphics_set_mode(GRAPHICSMODE_DEFAULT);
 #endif
-    update_palette();
+    if (count_of(palettes) <= settings.palette) {
+        settings.rgb0 = rgb0;
+        settings.rgb1 = rgb1;
+        settings.rgb2 = rgb2;
+        settings.rgb3 = rgb3;
+    }
     save_config();
 }
 
