@@ -109,7 +109,7 @@ static kbd_t keyboard = {
     .bits = { false, false, false, false, false, false, false, false },
     .h_code = -1
 };
-static input_bits_t gamepad1_bits = { false, false, false, false, false, false, false, false };
+input_bits_t gamepad1_bits = { false, false, false, false, false, false, false, false };
 static input_bits_t gamepad2_bits = { false, false, false, false, false, false, false, false };
 
 bool swap_ab = false;
@@ -990,6 +990,7 @@ static int16_t audio_buffer[AUDIO_BUFFER_LENGTH] = { 0 };
 void __time_critical_func(render_core)() {
     multicore_lockout_victim_init();
 
+    tuh_init(BOARD_TUH_RHPORT);
     ps2kbd.init_gpio();
     nespad_begin(clock_get_hz(clk_sys) / 1000, NES_GPIO_CLK, NES_GPIO_DATA, NES_GPIO_LAT);
 
@@ -1051,7 +1052,7 @@ void __time_critical_func(render_core)() {
 #endif
         tick = time_us_64();
 
-        // tuh_task();
+        tuh_task();
         // hid_app_task();
         tight_loop_contents();
     }
