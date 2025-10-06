@@ -824,6 +824,7 @@ void menu() {
     while (!exit) {
         blink = !blink;
         bool hex_edit_mode = false;
+        int8_t h_code = keyboard.h_code;
         for (int i = 0; i < MENU_ITEMS_NUMBER; i++) {
             uint8_t y = i + (TEXTMODE_ROWS - MENU_ITEMS_NUMBER >> 1);
             uint8_t x = TEXTMODE_COLS / 2 - 10;
@@ -840,17 +841,21 @@ void menu() {
                     case HEX:
                         if (item->max_value != 0 && count_of(palettes) <= settings.palette) {
                             uint32_t* value = (uint32_t *)item->value;
-                            if (keyboard.h_code >= 0) {
+                            if (h_code >= 0) {
                                 if (hex_digit < 0) hex_digit = 0;
                                 uint32_t vc = *value;
                                 vc &= ~(0xF << (5 - hex_digit) * 4);
-                                vc |= ((uint32_t)keyboard.h_code << (5 - hex_digit) * 4);
-                                keyboard.h_code = -1;
+                                vc |= ((uint32_t)h_code << (5 - hex_digit) * 4);
                                 if (++hex_digit == 6) {
                                     hex_digit = 0;
                                     current_item++;
                                 }
                                 if (vc < item->max_value) *value = vc;
+                                settings.rgb0 = rgb0;
+                                settings.rgb1 = rgb1;
+                                settings.rgb2 = rgb2;
+                                settings.rgb3 = rgb3;
+                                update_palette();
                                 break;
                             }
                             if (gamepad1_bits.right && hex_digit == 5) {
@@ -858,10 +863,12 @@ void menu() {
                             } else if (gamepad1_bits.right && hex_digit < 6) {
                                 hex_digit++;
                             }
-                            if (gamepad1_bits.left && hex_digit == -1) {
-                                hex_digit = 5;
-                            } else if (gamepad1_bits.left && hex_digit >= 0) {
-                                hex_digit--;
+                            if (h_code != 0xA) { // W/A for 'A' pressed
+                                if (gamepad1_bits.left && hex_digit == -1) {
+                                    hex_digit = 5;
+                                } else if (gamepad1_bits.left && hex_digit >= 0) {
+                                    hex_digit--;
+                                }
                             }
                             if (gamepad1_bits.up && hex_digit >= 0 && hex_digit <= 5) {
                                 uint32_t vc = *value + (1 << (5 - hex_digit) * 4);
