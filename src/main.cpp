@@ -722,7 +722,7 @@ const MenuItem menu_items[] = {
         { "Palette: %s ", ARRAY, &settings.palette, nullptr, count_of(palettes), {
                   "DEFAULT          "
                 , "BLACK & WHITE    "
-                , "RED FOX          "
+                , "AUTUMN FOREST    "
                 , "OCEAN SAND       "
                 , "MINT SAND        "
                 , "AMBER            "

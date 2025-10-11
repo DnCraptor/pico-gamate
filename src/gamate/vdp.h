@@ -19,7 +19,7 @@ static const uint8_t palettes[][12] = {
                 84,  84,  84,
                 0,   0,   0,
         },
-        { /* RED FOX */
+        { /* AUTUMN FOREST  */
                 0xD4, 0xFF, 0xFD,
                 0xF7, 0x90, 0x36,
                 0x13, 0x95, 0x66,
