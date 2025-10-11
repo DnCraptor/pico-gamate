@@ -19,6 +19,12 @@ static const uint8_t palettes[][12] = {
                 84,  84,  84,
                 0,   0,   0,
         },
+        {   /* SV_COLOR_SCHEME_BGB */
+                224, 248, 208,
+                136, 192, 112,
+                52, 104,  86,
+                8,  24,  32,
+        },
         { /* AUTUMN FOREST  */
                 0xD4, 0xFF, 0xFD,
                 0xF7, 0x90, 0x36,
@@ -54,12 +60,6 @@ static const uint8_t palettes[][12] = {
                 0, 102, 168,
                 0,  51,  84,
                 0,   0,   0,
-        },
-        {   /* SV_COLOR_SCHEME_BGB */
-                224, 248, 208,
-                136, 192, 112,
-                52, 104,  86,
-                8,  24,  32,
         },
         {   /* SV_COLOR_SCHEME_WATAROO */
                 0x7b, 0xc7, 0x7b,
