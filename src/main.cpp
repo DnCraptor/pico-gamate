@@ -720,9 +720,11 @@ const MenuItem menu_items[] = {
         {},
         { "Ghosting pix: %i ", INT, &settings.ghosting, nullptr, 6 }, // 6 == shift 1, 5->2, 4->3, 3->4, 2->5, 1->6, 0->7
         { "Palette: %s ", ARRAY, &settings.palette, nullptr, count_of(palettes), {
-                  "GREEN-ORANGE     "
-                , "DEFAULT          "
+                  "DEFAULT          "
                 , "BLACK & WHITE    "
+                , "RED FOX          "
+                , "OCEAN SAND       "
+                , "MINT SAND        "
                 , "AMBER            "
                 , "GREEN            "
                 , "BLUE             "
@@ -846,16 +848,21 @@ void menu() {
                                 uint32_t vc = *value;
                                 vc &= ~(0xF << (5 - hex_digit) * 4);
                                 vc |= ((uint32_t)h_code << (5 - hex_digit) * 4);
-                                if (++hex_digit == 6) {
-                                    hex_digit = 0;
-                                    current_item++;
+                                if (vc <= item->max_value) {
+                                    *value = vc;
+                                    if (++hex_digit == 6) {
+                                        h_code = -1;
+                                        hex_digit = -1;
+                                        keyboard.h_code = -1;
+                                        current_item++;
+                                    }
                                 }
-                                if (vc < item->max_value) *value = vc;
                                 settings.rgb0 = rgb0;
                                 settings.rgb1 = rgb1;
                                 settings.rgb2 = rgb2;
                                 settings.rgb3 = rgb3;
                                 update_palette();
+                                sleep_ms(125);
                                 break;
                             }
                             if (gamepad1_bits.right && hex_digit == 5) {
