@@ -248,6 +248,8 @@ static inline uint8_t get_pixel_from_vram(int x, int y) {
     return plane1 | (plane0 << 1);
 }
 
+static uint8_t screen2[150 * 160];
+
 void __time_critical_func(screen_update)(uint8_t *screen, uint8_t ghosting) {
     int real_x, real_y;
     if (ghosting) {
@@ -256,7 +258,7 @@ void __time_critical_func(screen_update)(uint8_t *screen, uint8_t ghosting) {
         ghosting = (0xFF >> (ghosting + 2)); // mask to extend values
         for (int scanline = 0; scanline < 150; scanline++) {
             get_real_x_and_y(real_x, real_y, scanline);
-            uint8_t* p = screen + scanline * 160;
+            uint8_t* p = screen2 + scanline * 160;
             for (int x = 0; x < 160; ++x) {
                 uint8_t b = get_pixel_from_vram(x + real_x, real_y);
                 *p++ = convert_to_rich_format(b, *p, ghost_speed, ghosting);
@@ -265,12 +267,13 @@ void __time_critical_func(screen_update)(uint8_t *screen, uint8_t ghosting) {
     } else {
         for (int scanline = 0; scanline < 150; scanline++) {
             get_real_x_and_y(real_x, real_y, scanline);
-            uint8_t* p = screen + scanline * 160;
+            uint8_t* p = screen2 + scanline * 160;
             for (int x = 0; x < 160; ++x) {
-                *p++ = get_pixel_from_vram(x + real_x, real_y) << 5;
+                *p++ = (get_pixel_from_vram(x + real_x, real_y) << 5) | 0b11111;
             }
         }
     }
+    memcpy(screen, screen2, sizeof(screen2));
 }
 
 void vdp_savestate(int regs[8]) {
