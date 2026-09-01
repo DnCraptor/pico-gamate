@@ -64,6 +64,51 @@ static uint text_buffer_height = 0;
 
 static uint16_t txt_palette[16];
 
+/*
+ * The bezel asset itself remains const/flash-resident, but the VGA IRQ must
+ * never fetch it through XIP. Copy the exact data touched by
+ * dma_handler_VGA() to SRAM once, before DMA IRQs are enabled.
+ */
+static uint8_t* gamate_photo_ram = NULL;
+static uint8_t* gamate_photo_outside_ram = NULL;
+static uint8_t* gamate_photo_sides_ram = NULL;
+static uint8_t* gamate_photo_scale_x_ram = NULL;
+static uint8_t* gamate_photo_scale_y_ram = NULL;
+static bool gamate_photo_ram_ready = false;
+
+enum {
+    GAMATE_PHOTO_RAM_BYTES = sizeof(gamate_photo_outside) +
+                             sizeof(gamate_photo_sides) +
+                             sizeof(gamate_photo_scale_x) +
+                             sizeof(gamate_photo_scale_y),
+};
+
+static void gamate_photo_prepare_ram(void) {
+    if (gamate_photo_ram_ready) return;
+
+    gamate_photo_ram = (uint8_t *)malloc(GAMATE_PHOTO_RAM_BYTES);
+    if (!gamate_photo_ram) return;
+
+    uint8_t* p = gamate_photo_ram;
+
+    gamate_photo_outside_ram = p;
+    memcpy(p, gamate_photo_outside, sizeof(gamate_photo_outside));
+    p += sizeof(gamate_photo_outside);
+
+    gamate_photo_sides_ram = p;
+    memcpy(p, gamate_photo_sides, sizeof(gamate_photo_sides));
+    p += sizeof(gamate_photo_sides);
+
+    gamate_photo_scale_x_ram = p;
+    memcpy(p, gamate_photo_scale_x, sizeof(gamate_photo_scale_x));
+    p += sizeof(gamate_photo_scale_x);
+
+    gamate_photo_scale_y_ram = p;
+    memcpy(p, gamate_photo_scale_y, sizeof(gamate_photo_scale_y));
+
+    gamate_photo_ram_ready = true;
+}
+
 //буфер 2К текстовой палитры для быстрой работы
 static uint16_t* txt_palette_fast = NULL;
 //static uint16_t txt_palette_fast[256*4];
@@ -117,30 +162,57 @@ void __time_critical_func() dma_handler_VGA() {
         if (screen_line % 2) return;
 
         const int logical_y = screen_line / 2;
-        uint16_t* dst = (uint16_t *)(*output_buffer);
-        dst += shift_picture / 2;
+        uint8_t* dst = (uint8_t *)(*output_buffer) + shift_picture;
+        uint32_t* dst32 = (uint32_t *)dst;
 
-        const uint8_t* photo = gamate_photo_pixels +
-                               (logical_y >> 1) * (GAMATE_PHOTO_WIDTH / 2);
-        const uint16_t* photo_palette = gamate_photo_palette[logical_y & 1];
-        for (int x = 0; x < GAMATE_PHOTO_WIDTH; x += 2) {
-            const uint8_t pair = *photo++;
-            dst[x] = photo_palette[pair >> 4];
-            dst[x + 1] = photo_palette[pair & 0x0f];
+        /* Never fall back to the const asset here: that would reintroduce
+         * XIP reads into the timing-critical DMA IRQ. */
+        if (!gamate_photo_ram_ready) {
+            uint32_t color32 = bg_color[(frame_number & is_flash_frame) & 1];
+            for (int i = 0; i < GAMATE_PHOTO_WIDTH_BYTES / 4; ++i) {
+                dst32[i] = color32;
+            }
+            dma_channel_set_read_addr(dma_chan_ctrl, output_buffer, false);
+            return;
         }
 
-        if (logical_y >= GAMATE_PHOTO_SCREEN_Y &&
-            logical_y < GAMATE_PHOTO_SCREEN_Y + GAMATE_PHOTO_SCREEN_H) {
-            const int src_y = (logical_y - GAMATE_PHOTO_SCREEN_Y) *
-                              graphics_buffer_height / GAMATE_PHOTO_SCREEN_H;
+        if (logical_y < GAMATE_PHOTO_SCREEN_Y ||
+            logical_y >= GAMATE_PHOTO_SCREEN_Y + GAMATE_PHOTO_SCREEN_H) {
+            // Rows outside the LCD are copied once, directly in VGA wire format.
+            const int photo_y = logical_y < GAMATE_PHOTO_SCREEN_Y
+                              ? logical_y
+                              : logical_y - GAMATE_PHOTO_SCREEN_H;
+            const uint32_t* photo32 = (const uint32_t *)(gamate_photo_outside_ram +
+                                                        photo_y * GAMATE_PHOTO_WIDTH_BYTES);
+            for (int i = 0; i < GAMATE_PHOTO_WIDTH_BYTES / 4; ++i) {
+                dst32[i] = photo32[i];
+            }
+        } else {
+            const int screen_y = logical_y - GAMATE_PHOTO_SCREEN_Y;
+            const uint8_t* bezel = gamate_photo_sides_ram + screen_y * GAMATE_PHOTO_SIDE_BYTES;
+
+            // Do not copy the photographic LCD and then overwrite it.  Only the
+            // two bezel spans are fetched from flash; total writes remain one
+            // 640-byte visible scanline, comparable to the normal scaler.
+            const uint32_t* left32 = (const uint32_t *)bezel;
+            for (int i = 0; i < GAMATE_PHOTO_SCREEN_X_BYTES / 4; ++i) {
+                dst32[i] = left32[i];
+            }
+
+            const int src_y = gamate_photo_scale_y_ram[screen_y];
             const uint8_t* src = graphics_buffer + src_y * graphics_buffer_width;
-            uint16_t* pixels = dst + GAMATE_PHOTO_SCREEN_X;
+            uint16_t* pixels = (uint16_t *)(dst + GAMATE_PHOTO_SCREEN_X_BYTES);
             uint16_t* current_palette = palette[((src_y & is_flash_line) +
                                                   (frame_number & is_flash_frame)) & 1];
+            for (int x = 0; x < GAMATE_PHOTO_SCREEN_W_PAIRS; ++x) {
+                pixels[x] = current_palette[src[gamate_photo_scale_x_ram[x]]];
+            }
 
-            for (int x = 0; x < GAMATE_PHOTO_SCREEN_W; ++x) {
-                const int src_x = x * graphics_buffer_width / GAMATE_PHOTO_SCREEN_W;
-                pixels[x] = current_palette[src[src_x]];
+            uint32_t* right_dst = (uint32_t *)(dst + GAMATE_PHOTO_SCREEN_X_BYTES +
+                                               GAMATE_PHOTO_SCREEN_W_PAIRS * 2);
+            const uint32_t* right32 = (const uint32_t *)(bezel + GAMATE_PHOTO_SCREEN_X_BYTES);
+            for (int i = 0; i < GAMATE_PHOTO_RIGHT_BYTES / 4; ++i) {
+                right_dst[i] = right32[i];
             }
         }
 
@@ -643,6 +715,10 @@ void graphics_init() {
         false // Don't start yet
     );
     //dma_channel_set_read_addr(dma_chan, &DMA_BUF_ADDR[0], false);
+
+    /* Do every flash read needed by the photographic bezel before the
+     * timing-critical DMA IRQ is installed/enabled. */
+    gamate_photo_prepare_ram();
 
     graphics_set_mode(TGA_320x200x16);
 
