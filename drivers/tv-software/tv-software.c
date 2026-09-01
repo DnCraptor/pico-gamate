@@ -14,20 +14,14 @@
 #include "hardware/pio.h"
 #include "pico/stdlib.h"
 #include "stdlib.h"
+
+#if defined(VGA_BASE_PIN)
+#undef TV_BASE_PIN
+#define TV_BASE_PIN VGA_BASE_PIN
+#endif
 #pragma GCC optimize("Ofast")
 uint8_t* text_buffer = NULL;
 
-
-typedef struct tv_out_mode_t {
-    // double color_freq;
-    float color_index;
-    COLOR_FREQ_t c_freq;
-    enum graphics_mode_t mode_bpp;
-    g_out_TV_t tv_system;
-    NUM_TV_LINES_t N_lines;
-    bool cb_sync_PI_shift_lines;
-    bool cb_sync_PI_shift_half_frame;
-} tv_out_mode_t;
 
 //параметры по умолчанию
 tv_out_mode_t tv_out_mode = {
@@ -175,13 +169,8 @@ void graphics_set_modeTV(tv_out_mode_t mode) {
             break;
     }
 
-    double color_freq;
-    switch (tv_out_mode.c_freq) {
-        case _3579545: color_freq = 3.579545 * 1e6;
-            break;
-        case _4433619: color_freq = 4.43361875 * 1e6;
-            break;
-    }
+    const double color_freq =
+        tv_out_mode.c_freq == _3579545 ? 3.579545e6 : 4.43361875e6;
 
     video_mode.H_len = ((color_freq * 4) / 1e6) * 63.9;
     video_mode.H_len &= 0xfffffff8;
@@ -206,18 +195,16 @@ void graphics_set_modeTV(tv_out_mode_t mode) {
     };
     video_mode.LVL_BLACK_TMPL = CONV_DAC(video_mode.LVL_BLACK) | (1 << SYNC_PIN);
 
-    sm_config_set_clkdiv((pio_sm_config*)PIO_VIDEO->sm, clock_get_hz(clk_sys) / (color_freq * 4));
+    pio_sm_set_clkdiv(PIO_VIDEO, SM_video,
+                      (float)(clock_get_hz(clk_sys) / (color_freq * 4)));
 };
 
 void __not_in_flash_func(adjust_clk)(void) {
-    double color_freq;
-    switch (tv_out_mode.c_freq) {
-        case _3579545: color_freq = 3.579545 * 1e6;
-            break;
-        case _4433619: color_freq = 4.43361875 * 1e6;
-            break;
-    }
-    sm_config_set_clkdiv((pio_sm_config*)PIO_VIDEO->sm, clock_get_hz(clk_sys) / (color_freq * 4));
+    if (SM_video == -1) return;
+    const double color_freq =
+        tv_out_mode.c_freq == _3579545 ? 3.579545e6 : 4.43361875e6;
+    pio_sm_set_clkdiv(PIO_VIDEO, SM_video,
+                      (float)(clock_get_hz(clk_sys) / (color_freq * 4)));
 }
 
 static uint32_t cbNORM[2][10]; //цветовая вспышка 80байт
@@ -439,7 +426,7 @@ void graphics_set_palette(uint8_t i, uint32_t color888) {
 //основная функция заполнения буферов видеоданных
 static bool __time_critical_func(video_timer_callbackTV)(repeating_timer_t* rt) {
     static uint dma_inx_out = 0;
-    static uint lines_buf_inx = 0;
+    static uint lines_buf_inx = N_LINE_BUF - 1;
 
     if (dma_chan_ctrl == -1) return 1; //не определен дма канал
 
@@ -449,7 +436,7 @@ static bool __time_critical_func(video_timer_callbackTV)(repeating_timer_t* rt) 
 
     //uint n_loop=(N_LINE_BUF_DMA+dma_inx-dma_inx_out)%N_LINE_BUF_DMA;
 
-    static uint32_t line_active = 0;
+    static uint32_t line_active = UINT32_MAX;
     static uint8_t* input_buffer = NULL;
     static uint32_t frame_i = 0;
     static uint32_t g_str_index = 1;
@@ -996,24 +983,53 @@ static bool __time_critical_func(video_timer_callbackTV)(repeating_timer_t* rt) 
                 if (input_buffer != NULL)
                     switch (tv_out_mode.mode_bpp) {
                         case TEXTMODE_DEFAULT: {
-                            output_buffer8 += 8;
-                            for (int x = 0; x < TEXTMODE_COLS; x++) {
-                                const uint16_t offset = y / 8 * (TEXTMODE_COLS * 2) + x * 2;
-                                const uint8_t c = text_buffer[offset];
-                                const uint8_t colorIndex = text_buffer[offset + 1];
-                                uint8_t glyph_row = font_6x8[c * 8 + y % 8];
+                            /*
+                             * conv_color contains one four-sample chroma period for
+                             * each logical colour. Keep that phase continuous across
+                             * the complete line and scale the 240 text pixels to the
+                             * same active span used by graphics mode.
+                             */
+                            const int out_width = video_mode.img_W - d_end;
+                            const int text_width = TEXTMODE_COLS * 6;
+                            const int text_row = y >> 3;
+                            const int glyph_y = y & 7;
+                            int source_acc = 0;
+                            int char_x = 0;
+                            int glyph_x = 0;
 
-                                for (int bit = 6; bit--;) {
-                                    uint32_t cout32 = conv_color[li][glyph_row & 1
-                                                                         ? textmode_palette[colorIndex & 0xf]
-                                                                         //цвет шрифта
-                                                                         : textmode_palette[colorIndex >> 4] //цвет фона
-                                    ];
-                                    uint8_t* c_4 = (uint8_t*)&cout32;
-                                    *output_buffer8++ = c_4[bit % 4];
-                                    *output_buffer8++ = c_4[bit % 4];
-                                    *output_buffer8++ = c_4[bit % 4];
-                                    glyph_row >>= 1;
+                            output_buffer8 += buffer_shift;
+
+                            const uint8_t* cell = text_buffer + text_row * (TEXTMODE_COLS * 2);
+                            uint8_t glyph_row = font_6x8[cell[0] * 8 + glyph_y];
+                            uint8_t colorIndex = cell[1];
+                            uint8_t palette_index = textmode_palette[(glyph_row & 1)
+                                                                         ? (colorIndex & 0xf)
+                                                                         : (colorIndex >> 4)];
+                            uint32_t cout32 = conv_color[li][palette_index];
+                            uint8_t* c_4 = (uint8_t*)&cout32;
+
+                            for (int i = 0; i < out_width; i++) {
+                                *output_buffer8++ = c_4[i & 3];
+
+                                source_acc += text_width;
+                                if (source_acc >= out_width) {
+                                    source_acc -= out_width;
+                                    glyph_x++;
+
+                                    if (glyph_x == 6) {
+                                        glyph_x = 0;
+                                        char_x++;
+                                        if (char_x == TEXTMODE_COLS) continue;
+                                        cell += 2;
+                                        glyph_row = font_6x8[cell[0] * 8 + glyph_y];
+                                        colorIndex = cell[1];
+                                    }
+
+                                    palette_index = textmode_palette[((glyph_row >> glyph_x) & 1)
+                                                                         ? (colorIndex & 0xf)
+                                                                         : (colorIndex >> 4)];
+                                    cout32 = conv_color[li][palette_index];
+                                    c_4 = (uint8_t*)&cout32;
                                 }
                             }
                         }
@@ -1177,8 +1193,9 @@ void graphics_init() {
     channel_config_set_write_increment(&cfg_dma, false);
     channel_config_set_ring(&cfg_dma,false, 2 + N_LINE_BUF_log2);
 
-    for (int i = 0; i < N_LINE_BUF * 2; i++) {
-        transfer_count_DMA_CTRL[i] = video_mode.H_len / 1;
+    for (int i = 0; i < N_LINE_BUF_DMA; i++) {
+        transfer_count_DMA_CTRL[i] = video_mode.H_len;
+        rd_addr_DMA_CTRL[i] = (uint32_t)&lines_buf[i & (N_LINE_BUF - 1)];
     }
 
     dma_channel_configure(
@@ -1225,7 +1242,9 @@ void graphics_set_textbuffer(uint8_t* buffer) {
 };
 
 void graphics_set_offset(const int x, const int y) {
-    graphics_buffer.shift_x = x;
+    // Four DAC samples form one colour-carrier period. Keep the image shift
+    // phase-neutral so moving the picture cannot rotate chroma phase.
+    graphics_buffer.shift_x = (x / 4) * 4;
     graphics_buffer.shift_y = y;
 };
 
@@ -1236,8 +1255,20 @@ void clrScr(const uint8_t color) {
 
 void graphics_set_mode(const enum graphics_mode_t mode) {
     tv_out_mode.mode_bpp = mode;
-    tv_out_mode.color_index = TEXTMODE_DEFAULT == mode ? 0.0 : 1.0;
-    // tv_out_mode.cb_sync_PI_shift_lines = TEXTMODE_DEFAULT == mode ? true : false;
+
+    // A television standard is a coherent timing set, not three independent
+    // knobs. This also repairs stale combinations left by old menu settings.
+    if (tv_out_mode.tv_system == g_TV_OUT_PAL) {
+        tv_out_mode.N_lines = _624_lines;
+        tv_out_mode.c_freq = _4433619;
+    } else {
+        tv_out_mode.N_lines = _524_lines;
+        tv_out_mode.c_freq = _3579545;
+    }
+    tv_out_mode.cb_sync_PI_shift_lines = false;
+    tv_out_mode.cb_sync_PI_shift_half_frame = true;
+
+    // Do not force text mode to monochrome. color_index is a user setting.
     graphics_set_modeTV(tv_out_mode);
     clrScr(0);
 }
