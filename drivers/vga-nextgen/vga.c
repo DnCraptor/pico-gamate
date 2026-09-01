@@ -79,8 +79,8 @@ static bool gamate_photo_ram_ready = false;
 enum {
     GAMATE_PHOTO_RAM_BYTES = sizeof(gamate_photo_outside) +
                              sizeof(gamate_photo_sides) +
-                             sizeof(gamate_photo_scale_x) +
-                             sizeof(gamate_photo_scale_y),
+                             GAMATE_PHOTO_SCREEN_W_PIXELS +
+                             GAMATE_PHOTO_SCREEN_H,
 };
 
 static void gamate_photo_prepare_ram(void) {
@@ -100,11 +100,15 @@ static void gamate_photo_prepare_ram(void) {
     p += sizeof(gamate_photo_sides);
 
     gamate_photo_scale_x_ram = p;
-    memcpy(p, gamate_photo_scale_x, sizeof(gamate_photo_scale_x));
-    p += sizeof(gamate_photo_scale_x);
+    for (int x = 0; x < GAMATE_PHOTO_SCREEN_W_PIXELS; ++x) {
+        gamate_photo_scale_x_ram[x] = (uint8_t)((x * 160) / GAMATE_PHOTO_SCREEN_W_PIXELS);
+    }
+    p += GAMATE_PHOTO_SCREEN_W_PIXELS;
 
     gamate_photo_scale_y_ram = p;
-    memcpy(p, gamate_photo_scale_y, sizeof(gamate_photo_scale_y));
+    for (int y = 0; y < GAMATE_PHOTO_SCREEN_H; ++y) {
+        gamate_photo_scale_y_ram[y] = (uint8_t)((y * 150) / GAMATE_PHOTO_SCREEN_H);
+    }
 
     gamate_photo_ram_ready = true;
 }
@@ -159,9 +163,7 @@ void __time_critical_func() dma_handler_VGA() {
     uint32_t* * output_buffer = &lines_pattern[2 + (screen_line & 1)];
 
     if (graphics_mode == GRAPHICSMODE_ASPECT) {
-        if (screen_line % 2) return;
-
-        const int logical_y = screen_line / 2;
+        const int logical_y = screen_line;
         uint8_t* dst = (uint8_t *)(*output_buffer) + shift_picture;
         uint32_t* dst32 = (uint32_t *)dst;
 
@@ -178,7 +180,7 @@ void __time_critical_func() dma_handler_VGA() {
 
         if (logical_y < GAMATE_PHOTO_SCREEN_Y ||
             logical_y >= GAMATE_PHOTO_SCREEN_Y + GAMATE_PHOTO_SCREEN_H) {
-            // Rows outside the LCD are copied once, directly in VGA wire format.
+            // Full physical VGA row, already quantized/dithered to RGB222.
             const int photo_y = logical_y < GAMATE_PHOTO_SCREEN_Y
                               ? logical_y
                               : logical_y - GAMATE_PHOTO_SCREEN_H;
@@ -191,26 +193,28 @@ void __time_critical_func() dma_handler_VGA() {
             const int screen_y = logical_y - GAMATE_PHOTO_SCREEN_Y;
             const uint8_t* bezel = gamate_photo_sides_ram + screen_y * GAMATE_PHOTO_SIDE_BYTES;
 
-            // Do not copy the photographic LCD and then overwrite it.  Only the
-            // two bezel spans are fetched from flash; total writes remain one
-            // 640-byte visible scanline, comparable to the normal scaler.
+            // Left bezel span is padded to a 32-bit boundary.  The three padded
+            // bytes overlap the LCD and are immediately replaced below.
             const uint32_t* left32 = (const uint32_t *)bezel;
-            for (int i = 0; i < GAMATE_PHOTO_SCREEN_X_BYTES / 4; ++i) {
+            for (int i = 0; i < GAMATE_PHOTO_LEFT_PAD_BYTES / 4; ++i) {
                 dst32[i] = left32[i];
             }
 
             const int src_y = gamate_photo_scale_y_ram[screen_y];
             const uint8_t* src = graphics_buffer + src_y * graphics_buffer_width;
-            uint16_t* pixels = (uint16_t *)(dst + GAMATE_PHOTO_SCREEN_X_BYTES);
+            uint8_t* pixels = dst + GAMATE_PHOTO_SCREEN_X_BYTES;
             uint16_t* current_palette = palette[((src_y & is_flash_line) +
                                                   (frame_number & is_flash_frame)) & 1];
-            for (int x = 0; x < GAMATE_PHOTO_SCREEN_W_PAIRS; ++x) {
-                pixels[x] = current_palette[src[gamate_photo_scale_x_ram[x]]];
+            for (int x = 0; x < GAMATE_PHOTO_SCREEN_W_PIXELS; ++x) {
+                const uint16_t pair = current_palette[src[gamate_photo_scale_x_ram[x]]];
+                pixels[x] = (GAMATE_PHOTO_SCREEN_X_BYTES + x) & 1
+                          ? (uint8_t)(pair >> 8)
+                          : (uint8_t)pair;
             }
 
             uint32_t* right_dst = (uint32_t *)(dst + GAMATE_PHOTO_SCREEN_X_BYTES +
-                                               GAMATE_PHOTO_SCREEN_W_PAIRS * 2);
-            const uint32_t* right32 = (const uint32_t *)(bezel + GAMATE_PHOTO_SCREEN_X_BYTES);
+                                               GAMATE_PHOTO_SCREEN_W_PIXELS);
+            const uint32_t* right32 = (const uint32_t *)(bezel + GAMATE_PHOTO_LEFT_PAD_BYTES);
             for (int i = 0; i < GAMATE_PHOTO_RIGHT_BYTES / 4; ++i) {
                 right_dst[i] = right32[i];
             }
