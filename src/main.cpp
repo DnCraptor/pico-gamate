@@ -996,6 +996,9 @@ void menu() {
         graphics_set_offset(0, 4);
         graphics_set_mode(GRAPHICSMODE_DEFAULT);
     }
+#elif HDMI
+    graphics_set_offset(0, 0);
+    graphics_set_mode(settings.aspect_ratio ? GRAPHICSMODE_ASPECT : GRAPHICSMODE_DEFAULT);
 #else
     graphics_set_mode(GRAPHICSMODE_DEFAULT);
 #endif
@@ -1222,6 +1225,9 @@ int __time_critical_func(main)() {
             graphics_set_offset(0, 4);
             graphics_set_mode(GRAPHICSMODE_DEFAULT);
         }
+#elif HDMI
+        graphics_set_offset(0, 0);
+        graphics_set_mode(settings.aspect_ratio ? GRAPHICSMODE_ASPECT : GRAPHICSMODE_DEFAULT);
 #else
         settings.aspect_ratio = false;
         graphics_set_mode(GRAPHICSMODE_DEFAULT);

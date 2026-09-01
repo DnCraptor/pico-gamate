@@ -8,6 +8,7 @@
 #include "pico/time.h"
 #include "pico/multicore.h"
 #include "hardware/clocks.h"
+#include "gamate_photo.h"
 
 //PIO параметры
 static uint offs_prg0 = 0;
@@ -32,6 +33,14 @@ static int graphics_buffer_width = 0;
 static int graphics_buffer_height = 0;
 static int graphics_buffer_shift_x = 0;
 static int graphics_buffer_shift_y = 0;
+
+// Gamate bezel cache. The source asset lives in flash, but the scanline IRQ
+// only accesses these SRAM copies.
+static uint8_t* gamate_hdmi_outside_sram = NULL;
+static uint8_t* gamate_hdmi_sides_sram = NULL;
+static uint8_t gamate_hdmi_scale_x[GAMATE_HDMI_W];
+static uint8_t gamate_hdmi_scale_y[GAMATE_HDMI_H];
+static bool gamate_hdmi_ready = false;
 
 //текстовый буфер
 uint8_t* text_buffer = NULL;
@@ -58,6 +67,54 @@ uint32_t conv_color[1224];
 
 //индекс, проверяющий зависание
 static uint32_t irq_inx = 0;
+
+static inline uint8_t gamate_hdmi_palette_slot(const int i) {
+    return (i < 112) ? (uint8_t)(128 + i) : (uint8_t)(244 + i - 112);
+}
+
+static bool gamate_hdmi_prepare_sram() {
+    if (gamate_hdmi_ready) return true;
+
+    gamate_hdmi_outside_sram = (uint8_t *)malloc(GAMATE_HDMI_OUTSIDE_SIZE);
+    gamate_hdmi_sides_sram = (uint8_t *)malloc(GAMATE_HDMI_SIDES_SIZE);
+    if (!gamate_hdmi_outside_sram || !gamate_hdmi_sides_sram) {
+        free(gamate_hdmi_outside_sram);
+        free(gamate_hdmi_sides_sram);
+        gamate_hdmi_outside_sram = NULL;
+        gamate_hdmi_sides_sram = NULL;
+        return false;
+    }
+
+    memcpy(gamate_hdmi_outside_sram, gamate_hdmi_outside, GAMATE_HDMI_OUTSIDE_SIZE);
+    memcpy(gamate_hdmi_sides_sram, gamate_hdmi_sides, GAMATE_HDMI_SIDES_SIZE);
+
+    for (int x = 0; x < GAMATE_HDMI_W; x++)
+        gamate_hdmi_scale_x[x] = (uint8_t)((x * 160) / GAMATE_HDMI_W);
+    for (int y = 0; y < GAMATE_HDMI_H; y++)
+        gamate_hdmi_scale_y[y] = (uint8_t)((y * 150) / GAMATE_HDMI_H);
+
+    gamate_hdmi_ready = true;
+    return true;
+}
+
+static void gamate_hdmi_load_photo_palette() {
+    for (int i = 0; i < GAMATE_HDMI_PALETTE_SIZE; i++)
+        graphics_set_palette(gamate_hdmi_palette_slot(i), gamate_hdmi_palette_rgb[i]);
+}
+
+static void gamate_hdmi_load_text_palette() {
+    static const uint32_t colors[16] = {
+        RGB888(0x00, 0x00, 0x00), RGB888(0x00, 0x00, 0xC4),
+        RGB888(0x00, 0xC4, 0x00), RGB888(0x00, 0xC4, 0xC4),
+        RGB888(0xC4, 0x00, 0x00), RGB888(0xC4, 0x00, 0xC4),
+        RGB888(0xC4, 0x7E, 0x00), RGB888(0xC4, 0xC4, 0xC4),
+        RGB888(0x4E, 0x4E, 0x4E), RGB888(0x4E, 0x4E, 0xDC),
+        RGB888(0x4E, 0xDC, 0x4E), RGB888(0x4E, 0xF3, 0xF3),
+        RGB888(0xDC, 0x4E, 0x4E), RGB888(0xF3, 0x4E, 0xF3),
+        RGB888(0xF3, 0xF3, 0x4E), RGB888(0xFF, 0xFF, 0xFF),
+    };
+    for (int i = 0; i < 16; i++) graphics_set_palette(200 + i, colors[i]);
+}
 
 //функции и константы HDMI
 
@@ -219,6 +276,35 @@ static void __scratch_y("hdmi_driver") dma_handler_HDMI() {
                         *output_buffer++ = 255;
                 }
 
+                break;
+            }
+            case GRAPHICSMODE_ASPECT: {
+                if (!gamate_hdmi_ready) {
+                    memset(output_buffer, 255, SCREEN_WIDTH);
+                    break;
+                }
+
+                if (y < GAMATE_HDMI_Y || y >= GAMATE_HDMI_Y + GAMATE_HDMI_H) {
+                    const int row = (y < GAMATE_HDMI_Y)
+                        ? y
+                        : GAMATE_HDMI_Y + y - (GAMATE_HDMI_Y + GAMATE_HDMI_H);
+                    memcpy(output_buffer, gamate_hdmi_outside_sram + row * SCREEN_WIDTH,
+                           SCREEN_WIDTH);
+                    break;
+                }
+
+                const int bezel_row = y - GAMATE_HDMI_Y;
+                const int right_width = SCREEN_WIDTH - GAMATE_HDMI_X - GAMATE_HDMI_W;
+                const int sides_stride = GAMATE_HDMI_X + right_width;
+                const uint8_t* sides = gamate_hdmi_sides_sram + bezel_row * sides_stride;
+
+                memcpy(output_buffer, sides, GAMATE_HDMI_X);
+                input_buffer = &graphics_buffer[
+                    gamate_hdmi_scale_y[bezel_row] * graphics_buffer_width];
+                for (int x = 0; x < GAMATE_HDMI_W; x++)
+                    output_buffer[GAMATE_HDMI_X + x] = input_buffer[gamate_hdmi_scale_x[x]];
+                memcpy(output_buffer + GAMATE_HDMI_X + GAMATE_HDMI_W,
+                       sides + GAMATE_HDMI_X, right_width);
                 break;
             }
             case TEXTMODE_DEFAULT:
@@ -545,6 +631,8 @@ void __not_in_flash_func(adjust_clk)(void) {
 //выбор видеорежима
 void graphics_set_mode(enum graphics_mode_t mode) {
     graphics_mode = mode;
+    if (mode == GRAPHICSMODE_ASPECT) gamate_hdmi_load_photo_palette();
+    else if (mode == TEXTMODE_DEFAULT || mode == TEXTMODE_53x30) gamate_hdmi_load_text_palette();
     clrScr(0);
 };
 
@@ -552,7 +640,8 @@ void graphics_set_palette(uint8_t i, uint32_t color888) {
     palette[i] = color888 & 0x00ffffff;
 
 
-    if ((i >= BASE_HDMI_CTRL_INX) && (i != 255)) return; //не записываем "служебные" цвета
+    if (i >= BASE_HDMI_CTRL_INX && i < BASE_HDMI_CTRL_INX + 4)
+        return; // 240..243 are HDMI control symbols, not palette colors
 
     uint64_t* conv_color64 = (uint64_t *) conv_color;
     const uint8_t R = (color888 >> 16) & 0xff;
@@ -599,6 +688,7 @@ void graphics_init() {
     graphics_set_palette(214, RGB888(0xF3, 0xF3, 0x4E)); //yellow
     graphics_set_palette(215, RGB888(0xFF, 0xFF, 0xFF)); //white
 
+    gamate_hdmi_prepare_sram();
     hdmi_init();
 }
 
