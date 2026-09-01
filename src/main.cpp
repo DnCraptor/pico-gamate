@@ -990,7 +990,7 @@ void menu() {
 
 #if VGA
     if (settings.aspect_ratio) {
-        graphics_set_offset(80, 40);
+        graphics_set_offset(0, 0);
         graphics_set_mode(GRAPHICSMODE_ASPECT);
     } else {
         graphics_set_offset(0, 4);
@@ -1216,7 +1216,7 @@ int __time_critical_func(main)() {
 
 #if VGA
         if (settings.aspect_ratio) {
-            graphics_set_offset(80, 40);
+            graphics_set_offset(0, 0);
             graphics_set_mode(GRAPHICSMODE_ASPECT);
         } else {
             graphics_set_offset(0, 4);

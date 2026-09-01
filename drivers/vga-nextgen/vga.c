@@ -1,4 +1,5 @@
 #include "graphics.h"
+#include "gamate_photo.h"
 #include "hardware/clocks.h"
 #include "stdbool.h"
 #include "hardware/structs/pll.h"
@@ -111,13 +112,48 @@ void __time_critical_func() dma_handler_VGA() {
     int y, line_number;
 
     uint32_t* * output_buffer = &lines_pattern[2 + (screen_line & 1)];
+
+    if (graphics_mode == GRAPHICSMODE_ASPECT) {
+        if (screen_line % 2) return;
+
+        const int logical_y = screen_line / 2;
+        uint16_t* dst = (uint16_t *)(*output_buffer);
+        dst += shift_picture / 2;
+
+        const uint8_t* photo = gamate_photo_pixels +
+                               (logical_y >> 1) * (GAMATE_PHOTO_WIDTH / 2);
+        const uint16_t* photo_palette = gamate_photo_palette[logical_y & 1];
+        for (int x = 0; x < GAMATE_PHOTO_WIDTH; x += 2) {
+            const uint8_t pair = *photo++;
+            dst[x] = photo_palette[pair >> 4];
+            dst[x + 1] = photo_palette[pair & 0x0f];
+        }
+
+        if (logical_y >= GAMATE_PHOTO_SCREEN_Y &&
+            logical_y < GAMATE_PHOTO_SCREEN_Y + GAMATE_PHOTO_SCREEN_H) {
+            const int src_y = (logical_y - GAMATE_PHOTO_SCREEN_Y) *
+                              graphics_buffer_height / GAMATE_PHOTO_SCREEN_H;
+            const uint8_t* src = graphics_buffer + src_y * graphics_buffer_width;
+            uint16_t* pixels = dst + GAMATE_PHOTO_SCREEN_X;
+            uint16_t* current_palette = palette[((src_y & is_flash_line) +
+                                                  (frame_number & is_flash_frame)) & 1];
+
+            for (int x = 0; x < GAMATE_PHOTO_SCREEN_W; ++x) {
+                const int src_x = x * graphics_buffer_width / GAMATE_PHOTO_SCREEN_W;
+                pixels[x] = current_palette[src[src_x]];
+            }
+        }
+
+        dma_channel_set_read_addr(dma_chan_ctrl, output_buffer, false);
+        return;
+    }
+
     switch (graphics_mode) {
         case CGA_160x200x16:
         case CGA_320x200x4:
         case CGA_640x200x2:
         case TGA_320x200x16:
         case GRAPHICSMODE_3X3:
-        case GRAPHICSMODE_ASPECT:
             line_number = screen_line / 2;
             if (screen_line % 2) return;
             y = screen_line / 2 - graphics_buffer_shift_y;
@@ -314,12 +350,6 @@ void __time_critical_func() dma_handler_VGA() {
                 uint8_t t = *input_buffer_8bit++;
                 *output_buffer_16bit++ = current_palette[t];
                 *output_buffer_16bit++ = current_palette[t];
-            }
-            break;
-        case GRAPHICSMODE_ASPECT:
-            input_buffer_8bit = input_buffer + y * width;
-            for (int x = 0; x< width; x++) {
-                *output_buffer_16bit++ = current_palette[*input_buffer_8bit++];
             }
             break;
         default:
