@@ -44,11 +44,11 @@ set(PROG_VERSION "3.0.6")
 #set(m1p2launcher ON)
 #set(TFT ON)
 #set(ILI9341 ON)
-#set(HDMI ON)
+set(HDMI ON)
 #set(TV ON)
 #set(SOFTTV ON)
 
-#set(I2S ON)
+set(I2S ON)
 #set(HWAY ON)
 
 set(CMAKE_C_STANDARD 11)

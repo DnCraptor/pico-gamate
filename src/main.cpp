@@ -729,7 +729,7 @@ const MenuItem menu_items[] = {
         { "RGB1: %06Xh ", HEX, &rgb1, nullptr, 0xFFFFFF },
         { "RGB2: %06Xh ", HEX, &rgb2, nullptr, 0xFFFFFF },
         { "RGB3: %06Xh ", HEX, &rgb3, nullptr, 0xFFFFFF },
-#if VGA
+#if VGA || SOFTTV
         { "Keep aspect ratio: %s",     ARRAY, &settings.aspect_ratio,  nullptr, 1, {"NO ",       "YES"}},
 #endif
         { "Instant ignition simulation: %s",     ARRAY, &settings.instant_ignition,  nullptr, 1, {"NO ",       "YES"}},
@@ -975,6 +975,9 @@ void menu() {
     }
 #elif HDMI
     graphics_set_offset(0, 0);
+    graphics_set_mode(GRAPHICSMODE_ASPECT);
+#elif SOFTTV
+    graphics_set_offset(0, 0);
     graphics_set_mode(settings.aspect_ratio ? GRAPHICSMODE_ASPECT : GRAPHICSMODE_DEFAULT);
 #else
     graphics_set_mode(GRAPHICSMODE_DEFAULT);
@@ -1206,6 +1209,9 @@ int __time_critical_func(main)() {
             graphics_set_mode(GRAPHICSMODE_DEFAULT);
         }
 #elif HDMI
+        graphics_set_offset(0, 0);
+        graphics_set_mode(GRAPHICSMODE_ASPECT);
+#elif SOFTTV
         graphics_set_offset(0, 0);
         graphics_set_mode(settings.aspect_ratio ? GRAPHICSMODE_ASPECT : GRAPHICSMODE_DEFAULT);
 #else
