@@ -548,10 +548,20 @@ void __time_critical_func() dma_handler_VGA() {
         }
         case GRAPHICSMODE_DEFAULT:
             input_buffer_8bit = input_buffer + y * width;
-            for (int i = width; i--;) {
-                uint8_t t = *input_buffer_8bit++;
-                *output_buffer_16bit++ = current_palette[t];
-                *output_buffer_16bit++ = current_palette[t];
+            if (gamate_gray_lines) {
+                const uint16_t gray_pair =
+                    (uint16_t)GAMATE_GRAY_WIRE | ((uint16_t)GAMATE_GRAY_WIRE << 8);
+                for (int i = width; i--;) {
+                    const uint8_t t = *input_buffer_8bit++;
+                    *output_buffer_16bit++ = current_palette[t];
+                    *output_buffer_16bit++ = gray_pair;
+                }
+            } else {
+                for (int i = width; i--;) {
+                    const uint8_t t = *input_buffer_8bit++;
+                    *output_buffer_16bit++ = current_palette[t];
+                    *output_buffer_16bit++ = current_palette[t];
+                }
             }
             break;
         default:

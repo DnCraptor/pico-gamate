@@ -156,6 +156,7 @@ static void gamate_hdmi_load_text_palette() {
 //функции и константы HDMI
 
 #define BASE_HDMI_CTRL_INX (240)
+#define GAMATE_HDMI_4X3_GRAY_INX (216)
 //программа конвертации адреса
 
 uint16_t pio_program_instructions_conv_HDMI[] = {
@@ -348,13 +349,20 @@ static void __not_in_flash_func(dma_handler_HDMI)() {
                 break;
             }
             case GRAPHICSMODE_3X3: {
-                /* HDMI 4:3: no bezel. Stretch 160x150 to the complete
-                 * 320x240 logical active raster; the existing HDMI path
-                 * then emits the established 640x480 physical signal. */
+                /* HDMI 4:3: each source pixel already occupies two logical
+                 * samples; the HDMI transport doubles each sample again.
+                 * Gray mode uses those two logical samples independently. */
                 input_buffer = &graphics_buffer[
                     gamate_hdmi_4x3_scale_y[y] * graphics_buffer_width];
-                for (int x = 0; x < SCREEN_WIDTH; x++)
-                    output_buffer[x] = input_buffer[gamate_hdmi_4x3_scale_x[x]];
+                if (gamate_gray_lines) {
+                    for (int x = 0; x < 160; x++) {
+                        output_buffer[x * 2] = input_buffer[x];
+                        output_buffer[x * 2 + 1] = GAMATE_HDMI_4X3_GRAY_INX;
+                    }
+                } else {
+                    for (int x = 0; x < SCREEN_WIDTH; x++)
+                        output_buffer[x] = input_buffer[gamate_hdmi_4x3_scale_x[x]];
+                }
                 break;
             }
             case GRAPHICSMODE_ASPECT: {
@@ -731,6 +739,8 @@ void __not_in_flash_func(adjust_clk)(void) {
 void graphics_set_mode(enum graphics_mode_t mode) {
     graphics_mode = mode;
     if (mode == GRAPHICSMODE_ASPECT) gamate_hdmi_load_photo_palette();
+    else if (mode == GRAPHICSMODE_3X3)
+        graphics_set_palette(GAMATE_HDMI_4X3_GRAY_INX, RGB888(0x55, 0x55, 0x55));
     else if (mode == TEXTMODE_DEFAULT || mode == TEXTMODE_53x30) gamate_hdmi_load_text_palette();
     clrScr(0);
 };

@@ -936,7 +936,7 @@ const MenuItem menu_items[] = {
 #if VGA
         { "Gray lines: %s",            ARRAY, &gray_lines_menu,          nullptr, 4, {"N/A       ", "No        ", "Vertical  ", "Horizontal", "Both      "}},
 #elif HDMI
-        { "Gray lines: %s",            ARRAY, &gray_lines_menu,          nullptr, 2, {"N/A", "OFF", "ON "}},
+        { "Gray lines: %s",            ARRAY, &gray_lines_menu,          nullptr, 1, {"OFF", "ON "}},
 #endif
         { "Instant ignition simulation: %s",     ARRAY, &settings.instant_ignition,  nullptr, 1, {"NO ",       "YES"}},
         { "Demo game time: %s min", ARRAY, &demo_duration, nullptr, 3, { "1 ", "3 ", "5 ", "10" } },
@@ -1027,9 +1027,14 @@ void menu() {
 
     while (!exit) {
 #if VGA
-        gray_lines_menu = settings.aspect_ratio == 2 ? settings.gray_lines + 1 : 0;
+        if (settings.aspect_ratio == 2)
+            gray_lines_menu = settings.gray_lines + 1;
+        else if (settings.aspect_ratio == 0)
+            gray_lines_menu = settings.gray_lines ? 2 : 1;
+        else
+            gray_lines_menu = 0;
 #elif HDMI
-        gray_lines_menu = settings.aspect_ratio == 1 ? (settings.gray_lines ? 2 : 1) : 0;
+        gray_lines_menu = settings.gray_lines ? 1 : 0;
 #endif
         blink = !blink;
         bool hex_edit_mode = false;
@@ -1102,6 +1107,10 @@ void menu() {
                                 if (gamepad1_bits.right && settings.gray_lines < 3) settings.gray_lines++;
                                 if (gamepad1_bits.left && settings.gray_lines > 0) settings.gray_lines--;
                                 gray_lines_menu = settings.gray_lines + 1;
+                            } else if (settings.aspect_ratio == 0) {
+                                if (gamepad1_bits.right) settings.gray_lines = 1;
+                                if (gamepad1_bits.left) settings.gray_lines = 0;
+                                gray_lines_menu = settings.gray_lines ? 2 : 1;
                             } else {
                                 gray_lines_menu = 0;
                             }
@@ -1109,13 +1118,9 @@ void menu() {
                         }
 #elif HDMI
                         if (item->value == &gray_lines_menu) {
-                            if (settings.aspect_ratio == 1) {
-                                if (gamepad1_bits.right) settings.gray_lines = 2;
-                                if (gamepad1_bits.left) settings.gray_lines = 0;
-                                gray_lines_menu = settings.gray_lines ? 2 : 1;
-                            } else {
-                                gray_lines_menu = 0;
-                            }
+                            if (gamepad1_bits.right) settings.gray_lines = 2;
+                            if (gamepad1_bits.left) settings.gray_lines = 0;
+                            gray_lines_menu = settings.gray_lines ? 1 : 0;
                             break;
                         }
 #endif
@@ -1213,7 +1218,9 @@ void menu() {
     tv_out_mode.color_index = color_mode ? 1.0f : 0.0f;
 #endif
 #if VGA
-    gamate_gray_lines = settings.gray_lines;
+    gamate_gray_lines = settings.aspect_ratio == 2
+        ? settings.gray_lines
+        : (settings.aspect_ratio == 0 && settings.gray_lines ? 1 : 0);
     if (settings.aspect_ratio == 2) {
         graphics_set_offset(0, 0);
         graphics_set_mode(GRAPHICSMODE_ASPECT_2X);
@@ -1225,7 +1232,7 @@ void menu() {
         graphics_set_mode(GRAPHICSMODE_DEFAULT);
     }
 #elif HDMI
-    gamate_gray_lines = settings.aspect_ratio && settings.gray_lines ? 2 : 0;
+    gamate_gray_lines = settings.gray_lines ? 1 : 0;
     graphics_set_offset(0, 0);
     graphics_set_mode(settings.aspect_ratio ? GRAPHICSMODE_ASPECT : GRAPHICSMODE_3X3);
 #elif SOFTTV
@@ -1476,7 +1483,9 @@ int __time_critical_func(main)() {
         tv_out_mode.color_index = color_mode ? 1.0f : 0.0f;
 #endif
 #if VGA
-        gamate_gray_lines = settings.gray_lines;
+        gamate_gray_lines = settings.aspect_ratio == 2
+            ? settings.gray_lines
+            : (settings.aspect_ratio == 0 && settings.gray_lines ? 1 : 0);
         if (settings.aspect_ratio == 2) {
             graphics_set_offset(0, 0);
             graphics_set_mode(GRAPHICSMODE_ASPECT_2X);
@@ -1488,7 +1497,7 @@ int __time_critical_func(main)() {
             graphics_set_mode(GRAPHICSMODE_DEFAULT);
         }
 #elif HDMI
-        gamate_gray_lines = settings.aspect_ratio && settings.gray_lines ? 2 : 0;
+        gamate_gray_lines = settings.gray_lines ? 1 : 0;
         graphics_set_offset(0, 0);
         graphics_set_mode(settings.aspect_ratio ? GRAPHICSMODE_ASPECT : GRAPHICSMODE_3X3);
 #elif SOFTTV
