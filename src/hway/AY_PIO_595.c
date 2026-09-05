@@ -3,6 +3,8 @@
 #include "hardware/pwm.h"
 #include "pico/platform.h"
 
+static int sm_AY595 = -1;
+
 static const uint16_t program_instructions595[] = {
         //     .wrap_target
         0x80a0, //  0: pull   block           side 0
@@ -29,6 +31,11 @@ static void PWM_init_pin(uint pinN) {
 }
 
 void InitAY() {
+    if (sm_AY595 < 0) {
+        // HDMI uses two state machines on pio0, so SM1 is not guaranteed to be free.
+        sm_AY595 = pio_claim_unused_sm(pioAY595, true);
+    }
+
     PWM_init_pin(CLK_AY_PIN);
     pwm_set_gpio_level(CLK_AY_PIN, 2);
 
@@ -82,5 +89,6 @@ void InitAY() {
 };
 
 void __not_in_flash_func(SendAY)(uint16_t data) {
-    pioAY595->txf[sm_AY595] = data << 16;
+    if (sm_AY595 >= 0)
+        pioAY595->txf[sm_AY595] = data << 16;
 }

@@ -611,6 +611,7 @@ enum menu_type_e {
 
     SAVE,
     LOAD,
+    START_DEMO,
     ROM_SELECT,
     RETURN,
 };
@@ -836,6 +837,7 @@ const MenuItem menu_items[] = {
     { "252", "362", "366", "378", "396", "404", "408", "412", "416", "420", "424", "432" }
 },
 { "Press START / Enter to apply", NONE },
+    { "Start Demo", START_DEMO },
     { "Reset to ROM select", ROM_SELECT },
     { "Return to game", RETURN }
 };
@@ -983,6 +985,17 @@ void menu() {
                     case RETURN:
                         if (gamepad1_bits.start)
                             exit = true;
+                        break;
+
+                    case START_DEMO:
+                        if (gamepad1_bits.start) {
+                            demo_active = true;
+                            demo_current_name[0] = '\0';
+                            demo_advance_pending = true;
+                            gamate_demo_title_visible = false;
+                            reboot = true;
+                            return;
+                        }
                         break;
 
                     case ROM_SELECT:
