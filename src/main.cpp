@@ -1323,6 +1323,12 @@ int __time_critical_func(main)() {
     while (true) {
         if (need_browser) {
             graphics_set_mode(TEXTMODE_DEFAULT);
+#ifdef HWAY
+            /* Match menu() semantics: reset the external AY before
+             * entering the ROM browser, including demo termination. */
+            SendAY(0);
+            SendAY(AY_Enable);
+#endif
             demo_requested = false;
             filebrowser(HOME_DIR, "bin");
 
