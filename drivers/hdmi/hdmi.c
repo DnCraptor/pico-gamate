@@ -9,6 +9,8 @@
 #include "pico/multicore.h"
 #include "hardware/clocks.h"
 
+extern volatile uint8_t gamate_gray_lines;
+extern volatile uint8_t gamate_hdmi_aspect_mode;
 extern volatile bool gamate_demo_title_visible;
 extern volatile uint8_t gamate_demo_title_width;
 extern uint8_t gamate_demo_title_bitmap[8][156];
@@ -45,8 +47,13 @@ static uint8_t* gamate_hdmi_sides_sram = NULL;
 static uint8_t gamate_hdmi_scale_x[GAMATE_HDMI_W];
 static uint8_t gamate_hdmi_scale_y[GAMATE_HDMI_H];
 static bool gamate_hdmi_ready = false;
+/* 4:3 uses the complete logical 320x240 HDMI active raster.
+ * Precompute source coordinates so the DMA IRQ performs no division. */
+static uint8_t gamate_hdmi_4x3_scale_x[SCREEN_WIDTH];
+static uint8_t gamate_hdmi_4x3_scale_y[SCREEN_HEIGHT];
 static uint8_t gamate_hdmi_demo_bg = 128;
 static uint8_t gamate_hdmi_demo_fg = 128;
+static uint8_t gamate_hdmi_gray = 128;
 
 //текстовый буфер
 uint8_t* text_buffer = NULL;
@@ -65,6 +72,12 @@ static int dma_chan_pal_conv;
 static uint32_t* __scratch_y("hdmi_ptr_3") dma_lines[2] = {NULL,NULL};
 static uint32_t* __scratch_y("hdmi_ptr_4") DMA_BUF_ADDR[2];
 
+/* Gray-line mode keeps the proven HDMI DMA/PIO/TMDS path intact.
+ * This extra buffer holds one alternate palette-index scanline. */
+static alignas(4) uint8_t gamate_hdmi_gray_dma_line[400];
+static uint32_t* gamate_hdmi_gray_dma_addr =
+    (uint32_t *)gamate_hdmi_gray_dma_line;
+
 //ДМА палитра для конвертации
 //в хвосте этой памяти выделяется dma_data
 static alignas(4096)
@@ -76,6 +89,13 @@ static uint32_t irq_inx = 0;
 
 static inline uint8_t gamate_hdmi_palette_slot(const int i) {
     return (i < 112) ? (uint8_t)(128 + i) : (uint8_t)(244 + i - 112);
+}
+
+static void gamate_hdmi_prepare_4x3_scaling(void) {
+    for (int x = 0; x < SCREEN_WIDTH; x++)
+        gamate_hdmi_4x3_scale_x[x] = (uint8_t)((x * 160) / SCREEN_WIDTH);
+    for (int y = 0; y < SCREEN_HEIGHT; y++)
+        gamate_hdmi_4x3_scale_y[y] = (uint8_t)((y * 150) / SCREEN_HEIGHT);
 }
 
 static bool gamate_hdmi_prepare_sram() {
@@ -106,12 +126,21 @@ static bool gamate_hdmi_prepare_sram() {
 static void gamate_hdmi_load_photo_palette() {
     uint32_t darkest_luma = UINT32_MAX;
     uint32_t brightest_luma = 0;
+    uint32_t gray_error = UINT32_MAX;
     for (int i = 0; i < GAMATE_HDMI_PALETTE_SIZE; i++) {
         const uint32_t rgb = gamate_hdmi_palette_rgb[i];
         graphics_set_palette(gamate_hdmi_palette_slot(i), rgb);
         const uint32_t luma = ((rgb >> 16) & 0xff) * 299u +
                               ((rgb >> 8) & 0xff) * 587u +
                               (rgb & 0xff) * 114u;
+        const int dr = (int)((rgb >> 16) & 0xff) - 0x55;
+        const int dg = (int)((rgb >> 8) & 0xff) - 0x55;
+        const int db = (int)(rgb & 0xff) - 0x55;
+        const uint32_t error = (uint32_t)(dr * dr + dg * dg + db * db);
+        if (error < gray_error) {
+            gray_error = error;
+            gamate_hdmi_gray = gamate_hdmi_palette_slot(i);
+        }
         if (luma < darkest_luma) {
             darkest_luma = luma;
             gamate_hdmi_demo_bg = gamate_hdmi_palette_slot(i);
@@ -265,7 +294,29 @@ static void __not_in_flash_func(dma_handler_HDMI)() {
 
     line = line >= 524 ? 0 : line + 1;
 
+    static bool gray_primed = false;
+    const bool gray_active =
+        graphics_mode == GRAPHICSMODE_ASPECT && gamate_gray_lines != 0;
+    if (!gray_active || line == 0) gray_primed = false;
+
     if ((line & 1) == 0) return;
+
+    if (gray_active && gray_primed) {
+        /* The current odd physical line is the normal member of the
+         * already-proven 2-line pair. Read-copy it after DMA has started,
+         * replace only the live LCD span, and schedule the copy as the
+         * second physical line. No TMDS table or PIO code is touched. */
+        const uint8_t* current = (const uint8_t *)dma_lines[inx_buf_dma & 1];
+        hdmi_irq_copy(gamate_hdmi_gray_dma_line, current, 400);
+        const int current_y = ((int)line - 2) / 2;
+        if (current_y >= GAMATE_HDMI_Y &&
+            current_y < GAMATE_HDMI_Y + GAMATE_HDMI_H) {
+            hdmi_irq_fill(gamate_hdmi_gray_dma_line + 72 + GAMATE_HDMI_X,
+                          gamate_hdmi_gray, GAMATE_HDMI_W);
+        }
+        dma_channel_set_read_addr(dma_chan_ctrl,
+                                  &gamate_hdmi_gray_dma_addr, false);
+    }
 
     inx_buf_dma++;
 
@@ -307,6 +358,16 @@ static void __not_in_flash_func(dma_handler_HDMI)() {
                         *output_buffer++ = 255;
                 }
 
+                break;
+            }
+            case GRAPHICSMODE_3X3: {
+                /* HDMI 4:3: no bezel. Stretch 160x150 to the complete
+                 * 320x240 logical active raster; the existing HDMI path
+                 * then emits the established 640x480 physical signal. */
+                input_buffer = &graphics_buffer[
+                    gamate_hdmi_4x3_scale_y[y] * graphics_buffer_width];
+                for (int x = 0; x < SCREEN_WIDTH; x++)
+                    output_buffer[x] = input_buffer[gamate_hdmi_4x3_scale_x[x]];
                 break;
             }
             case GRAPHICSMODE_ASPECT: {
@@ -419,6 +480,8 @@ static void __not_in_flash_func(dma_handler_HDMI)() {
         };
     }
 
+
+    if (gray_active) gray_primed = true;
 
     // y=(y==524)?0:(y+1);
     // inx_buf_dma++;
@@ -732,6 +795,7 @@ void graphics_init() {
     graphics_set_palette(215, RGB888(0xFF, 0xFF, 0xFF)); //white
 
     gamate_hdmi_prepare_sram();
+    gamate_hdmi_prepare_4x3_scaling();
     hdmi_init();
 }
 

@@ -744,16 +744,114 @@ bool load() {
     return true;
 }
 
+static const char* config_platform_name() {
+#ifdef PICO_RP2350
+    if (strcmp(PICO_BOARD, "murmulator2") == 0) return "m2p2";
+    if (strcmp(PICO_BOARD, "olimex-pico-pc") == 0) return "pcp2";
+    if (strcmp(PICO_BOARD, "waveshare_rp2350_pizero") == 0) return "z0p2";
+    return "m1p2";
+#else
+    if (strcmp(PICO_BOARD, "murmulator2") == 0) return "m2p1";
+    if (strcmp(PICO_BOARD, "olimex-pico-pc") == 0) return "pcp1";
+    if (strcmp(PICO_BOARD, "waveshare_rp2040_pizero") == 0) return "z0p1";
+    return "m1p1";
+#endif
+}
+
+static const char* config_video_name() {
+#if HDMI
+    return "hdmi";
+#elif VGA
+    return "vga";
+#elif SOFTTV
+    return "softtv";
+#elif TV
+    return "tv";
+#elif TFT
+    return "tft";
+#else
+    return "unknown";
+#endif
+}
+
+static void settings_defaults() {
+    settings.version = 1;
+    settings.swap_ab = false;
+#if HDMI
+    settings.aspect_ratio = 1; // 1:2
+#else
+    settings.aspect_ratio = 0;
+#endif
+    settings.gray_lines = 0;
+    settings.ghosting = 4;
+    settings.palette = 0;
+    settings.save_slot = 0;
+    settings.tba = 0;
+    settings.rgb0 = 0xCCFFFF;
+    settings.rgb1 = 0xFFB266;
+    settings.rgb2 = 0xCC0066;
+    settings.rgb3 = 0x663300;
+    settings.instant_ignition = false;
+}
+
+static void settings_sanitize() {
+    settings.swap_ab = settings.swap_ab ? true : false;
+    settings.instant_ignition = settings.instant_ignition ? true : false;
+    if (settings.ghosting > 5) settings.ghosting = 4;
+    if (settings.save_slot > 5) settings.save_slot = 0;
+    if (settings.palette > count_of(palettes)) settings.palette = 0;
+#if VGA
+    if (settings.aspect_ratio > 2) settings.aspect_ratio = 2;
+    if (settings.gray_lines > 3) settings.gray_lines = 0;
+#elif HDMI
+    if (settings.aspect_ratio > 1) settings.aspect_ratio = 1;
+    settings.gray_lines = settings.gray_lines ? 2 : 0;
+#elif SOFTTV
+    if (settings.aspect_ratio > 1) settings.aspect_ratio = 0;
+    settings.gray_lines = 0;
+#else
+    settings.aspect_ratio = 0;
+    settings.gray_lines = 0;
+#endif
+}
+
+static void config_path(char* pathname, size_t size) {
+    snprintf(pathname, size, "/.config/gamate/%s/%s/emulator.cfg",
+             config_platform_name(), config_video_name());
+}
+
+static void config_mkdirs() {
+    char path[128];
+    f_mkdir("/.config");
+    f_mkdir("/.config/gamate");
+    snprintf(path, sizeof(path), "/.config/gamate/%s", config_platform_name());
+    f_mkdir(path);
+    snprintf(path, sizeof(path), "/.config/gamate/%s/%s",
+             config_platform_name(), config_video_name());
+    f_mkdir(path);
+}
+
 void load_config() {
+    settings_defaults();
+
     FIL file;
     char pathname[256];
-    sprintf(pathname, "%s\\emulator.cfg", HOME_DIR);
+    config_path(pathname, sizeof(pathname));
 
-    if (FR_OK == f_mount(&fs, "", 1) && FR_OK == f_open(&file, pathname, FA_READ)) {
-        UINT bytes_read;
-        f_read(&file, &settings, sizeof(settings), &bytes_read);
-        f_close(&file);
+    if (FR_OK == f_mount(&fs, "", 1)) {
+        config_mkdirs();
+        if (FR_OK == f_open(&file, pathname, FA_READ)) {
+            SETTINGS loaded = settings;
+            UINT bytes_read = 0;
+            if (FR_OK == f_read(&file, &loaded, sizeof(loaded), &bytes_read) &&
+                bytes_read == sizeof(loaded)) {
+                settings = loaded;
+            }
+            f_close(&file);
+        }
     }
+
+    settings_sanitize();
     rgb0 = settings.rgb0;
     rgb1 = settings.rgb1;
     rgb2 = settings.rgb2;
@@ -761,14 +859,19 @@ void load_config() {
 }
 
 void save_config() {
+    settings_sanitize();
+
     FIL file;
     char pathname[256];
-    sprintf(pathname, "%s\\emulator.cfg", HOME_DIR);
+    config_path(pathname, sizeof(pathname));
 
-    if (FR_OK == f_mount(&fs, "", 1) && FR_OK == f_open(&file, pathname, FA_CREATE_ALWAYS | FA_WRITE)) {
-        UINT bytes_writen;
-        f_write(&file, &settings, sizeof(settings), &bytes_writen);
-        f_close(&file);
+    if (FR_OK == f_mount(&fs, "", 1)) {
+        config_mkdirs();
+        if (FR_OK == f_open(&file, pathname, FA_CREATE_ALWAYS | FA_WRITE)) {
+            UINT bytes_writen;
+            f_write(&file, &settings, sizeof(settings), &bytes_writen);
+            f_close(&file);
+        }
     }
 }
 #if SOFTTV
@@ -821,11 +924,15 @@ const MenuItem menu_items[] = {
         { "RGB3: %06Xh ", HEX, &rgb3, nullptr, 0xFFFFFF },
 #if VGA
         { "Aspect ratio: %s",          ARRAY, &settings.aspect_ratio,  nullptr, 2, {"4:3", "1:1", "1:2"}},
+#elif HDMI
+        { "Aspect ratio: %s",          ARRAY, &settings.aspect_ratio,  nullptr, 1, {"4:3", "1:2"}},
 #elif SOFTTV
         { "Aspect ratio: %s",          ARRAY, &settings.aspect_ratio,  nullptr, 1, {"1:1", "4:3"}},
 #endif
 #if VGA
         { "Gray lines: %s",            ARRAY, &gray_lines_menu,          nullptr, 4, {"N/A       ", "No        ", "Vertical  ", "Horizontal", "Both      "}},
+#elif HDMI
+        { "Gray lines: %s",            ARRAY, &gray_lines_menu,          nullptr, 2, {"N/A", "OFF", "ON "}},
 #endif
         { "Instant ignition simulation: %s",     ARRAY, &settings.instant_ignition,  nullptr, 1, {"NO ",       "YES"}},
         { "Demo game time: %s min", ARRAY, &demo_duration, nullptr, 3, { "1 ", "3 ", "5 ", "10" } },
@@ -917,6 +1024,8 @@ void menu() {
     while (!exit) {
 #if VGA
         gray_lines_menu = settings.aspect_ratio == 2 ? settings.gray_lines + 1 : 0;
+#elif HDMI
+        gray_lines_menu = settings.aspect_ratio == 1 ? (settings.gray_lines ? 2 : 1) : 0;
 #endif
         blink = !blink;
         bool hex_edit_mode = false;
@@ -989,6 +1098,17 @@ void menu() {
                                 if (gamepad1_bits.right && settings.gray_lines < 3) settings.gray_lines++;
                                 if (gamepad1_bits.left && settings.gray_lines > 0) settings.gray_lines--;
                                 gray_lines_menu = settings.gray_lines + 1;
+                            } else {
+                                gray_lines_menu = 0;
+                            }
+                            break;
+                        }
+#elif HDMI
+                        if (item->value == &gray_lines_menu) {
+                            if (settings.aspect_ratio == 1) {
+                                if (gamepad1_bits.right) settings.gray_lines = 2;
+                                if (gamepad1_bits.left) settings.gray_lines = 0;
+                                gray_lines_menu = settings.gray_lines ? 2 : 1;
                             } else {
                                 gray_lines_menu = 0;
                             }
@@ -1101,8 +1221,9 @@ void menu() {
         graphics_set_mode(GRAPHICSMODE_DEFAULT);
     }
 #elif HDMI
+    gamate_gray_lines = settings.aspect_ratio && settings.gray_lines ? 2 : 0;
     graphics_set_offset(0, 0);
-    graphics_set_mode(GRAPHICSMODE_ASPECT);
+    graphics_set_mode(settings.aspect_ratio ? GRAPHICSMODE_ASPECT : GRAPHICSMODE_3X3);
 #elif SOFTTV
     graphics_set_offset(0, 0);
     graphics_set_mode(settings.aspect_ratio ? GRAPHICSMODE_ASPECT : GRAPHICSMODE_DEFAULT);
@@ -1363,8 +1484,9 @@ int __time_critical_func(main)() {
             graphics_set_mode(GRAPHICSMODE_DEFAULT);
         }
 #elif HDMI
+        gamate_gray_lines = settings.aspect_ratio && settings.gray_lines ? 2 : 0;
         graphics_set_offset(0, 0);
-        graphics_set_mode(GRAPHICSMODE_ASPECT);
+        graphics_set_mode(settings.aspect_ratio ? GRAPHICSMODE_ASPECT : GRAPHICSMODE_3X3);
 #elif SOFTTV
         graphics_set_offset(0, 0);
         graphics_set_mode(settings.aspect_ratio ? GRAPHICSMODE_ASPECT : GRAPHICSMODE_DEFAULT);
