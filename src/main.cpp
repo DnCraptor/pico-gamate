@@ -671,7 +671,11 @@ uint16_t frequencies[] = { 252, 362, 366, 378, 396, 404, 408, 412, 416, 420, 424
     uint8_t frequency_index = 3;
     #endif
 #else
-uint8_t frequency_index = 0;
+    #ifdef SOFTTV
+    uint8_t frequency_index = 3;
+    #else
+    uint8_t frequency_index = 0;
+    #endif
 #endif
 
 #ifndef PICO_RP2040
@@ -1195,14 +1199,14 @@ void menu() {
                             demo_advance_pending = true;
                             gamate_demo_title_visible = false;
                             reboot = true;
-                            return;
+                            exit = true;
                         }
                         break;
 
                     case ROM_SELECT:
                         if (gamepad1_bits.start) {
                             reboot = true;
-                            return;
+                            exit = true;
                         }
                         break;
                     default:

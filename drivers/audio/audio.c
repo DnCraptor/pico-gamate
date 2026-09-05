@@ -155,7 +155,7 @@ void i2s_write(const i2s_config_t *i2s_config,const int16_t *samples,const size_
  * i2s_config: I2S context obtained by i2s_get_default_config()
  *     sample: pointer to an array of dma_trans_count x 32 bits samples
  */
-void i2s_dma_write(i2s_config_t *i2s_config,const int16_t *samples) {
+void __not_in_flash_func(i2s_dma_write)(i2s_config_t *i2s_config,const int16_t *samples) {
     /* Wait the completion of the previous DMA transfer */
     dma_channel_wait_for_finish_blocking(i2s_config->dma_channel);
     /* Copy samples into the DMA buffer */
@@ -169,7 +169,14 @@ void i2s_dma_write(i2s_config_t *i2s_config,const int16_t *samples) {
 #else
 
     if(i2s_config->volume==0) {
-        memcpy(i2s_config->dma_buf,samples,i2s_config->dma_trans_count*sizeof(int32_t));
+        /* Keep the core1 audio hot path independent of libc/XIP.
+         * One DMA word is one interleaved stereo pair. */
+        uint32_t *dst = (uint32_t *)i2s_config->dma_buf;
+        for (uint16_t i = 0; i < i2s_config->dma_trans_count; ++i) {
+            const uint32_t left = (uint16_t)samples[i * 2];
+            const uint32_t right = (uint16_t)samples[i * 2 + 1];
+            dst[i] = left | (right << 16);
+        }
     } else {
         for(uint16_t i=0;i<i2s_config->dma_trans_count*2;i++) {
             i2s_config->dma_buf[i] = samples[i]>>i2s_config->volume;

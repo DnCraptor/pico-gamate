@@ -23,6 +23,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <pico.h>
+#include <pico/platform.h>
 #include "emu2149.h"
 
 static uint32_t voltbl[2][32] = {
@@ -333,8 +335,8 @@ PSG_calc (PSG * psg)
   return (int16_t) (psg->out << 4);
 }
 
-/*INLINE*/  void
-Pcalc_stereo (PSG * psg, int32_t out[2])
+/*INLINE*/ void __not_in_flash_func(Pcalc_stereo)
+(PSG * psg, int32_t out[2])
 {
   int i, noise;
   uint32_t incr;
@@ -427,8 +429,8 @@ Pcalc_stereo (PSG * psg, int32_t out[2])
   return;
 }
 
-EMU2149_API void
-PSG_calc_stereo (PSG * psg, int16_t *out, int32_t samples)
+EMU2149_API void __not_in_flash_func(PSG_calc_stereo)
+(PSG * psg, int16_t *out, int32_t samples)
 {
   int32_t buffers[2];
 
