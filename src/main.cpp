@@ -975,7 +975,6 @@ const MenuItem menu_items[] = {
 #if VGA || HDMI
         { "Gray level: %s",            ARRAY, &settings.gray_level,      nullptr, 3, {"0", "1", "2", "3"}},
 #endif
-        { "Instant ignition simulation: %s",     ARRAY, &settings.instant_ignition,  nullptr, 1, {"NO ",       "YES"}},
         { "Demo game time: %s", ARRAY, &demo_duration, nullptr, 5, { "30 sec", "45 sec", "1 min ", "3 min ", "5 min ", "10 min" } },
 #if SOFTTV
         { "" },
