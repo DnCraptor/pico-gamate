@@ -330,8 +330,8 @@ bool filebrowser_loadfile(const char pathname[256]) {
 extern "C" {
 volatile uint8_t gamate_gray_lines = 0;
 volatile bool gamate_demo_title_visible = false;
-volatile uint8_t gamate_demo_title_width = 0;
-uint8_t gamate_demo_title_bitmap[8][156] = { 0 };
+volatile uint16_t gamate_demo_title_width = 0;
+uint8_t gamate_demo_title_bitmap[8][316] = { 0 };
 }
 
 static bool demo_requested = false;
@@ -348,12 +348,16 @@ static void demo_prepare_title_bitmap(void) {
     gamate_demo_title_visible = false;
     memset(gamate_demo_title_bitmap, 0, sizeof(gamate_demo_title_bitmap));
 
-    size_t len = strlen(demo_current_name);
-    if (len > 26) len = 26;
-    gamate_demo_title_width = (uint8_t)(len * 6);
+    /* Display name only: strip the final extension and make file-name
+     * underscores readable without changing demo_current_name itself. */
+    const char *dot = strrchr(demo_current_name, '.');
+    size_t len = dot ? (size_t)(dot - demo_current_name) : strlen(demo_current_name);
+    if (len > 52) len = 52;
+    gamate_demo_title_width = (uint16_t)(len * 6);
 
     for (size_t c = 0; c < len; ++c) {
-        const uint8_t *glyph = &font_6x8[(uint8_t)demo_current_name[c] * 8];
+        const char ch = demo_current_name[c] == '_' ? ' ' : demo_current_name[c];
+        const uint8_t *glyph = &font_6x8[(uint8_t)ch * 8];
         for (int gy = 0; gy < 8; ++gy) {
             uint8_t bits = glyph[gy];
             uint8_t *dst = &gamate_demo_title_bitmap[gy][c * 6];
@@ -401,7 +405,7 @@ static bool demo_load_next_rom(const char *after_name) {
     demo_current_name[sizeof(demo_current_name) - 1] = '\0';
     demo_prepare_title_bitmap();
     demo_game_started_at = time_us_64();
-    demo_title_until = demo_game_started_at + 5000000ull;
+    demo_title_until = demo_game_started_at + 10000000ull;
     gamate_demo_title_visible = gamate_demo_title_width != 0;
     return true;
 }

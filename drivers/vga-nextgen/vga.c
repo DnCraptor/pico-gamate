@@ -15,8 +15,8 @@
 
 extern volatile uint8_t gamate_gray_lines;
 extern volatile bool gamate_demo_title_visible;
-extern volatile uint8_t gamate_demo_title_width;
-extern uint8_t gamate_demo_title_bitmap[8][156];
+extern volatile uint16_t gamate_demo_title_width;
+extern uint8_t gamate_demo_title_bitmap[8][316];
 
 uint16_t pio_program_VGA_instructions[] = {
     //     .wrap_target
@@ -124,6 +124,30 @@ static inline uint16_t gamate_dup_wire_pixel(const uint8_t p) {
 
 enum { GAMATE_GRAY_WIRE = 0xd5 };
 
+
+static inline __attribute__((always_inline)) void gamate_vga_draw_demo_title(
+        uint8_t* dst, const int screen_y) {
+    enum { TITLE_BAR_Y0 = 448, TITLE_TEXT_Y0 = 452, TITLE_TEXT_Y1 = 468, TITLE_BAR_Y1 = 472 };
+    if (!gamate_demo_title_visible || screen_y < TITLE_BAR_Y0 || screen_y >= TITLE_BAR_Y1) return;
+
+    /* Full-width overlay. Use explicit stores in the DMA IRQ; do not call
+     * memset/memcpy from this path. */
+    for (int x = 0; x < GAMATE_PHOTO_WIDTH_BYTES; ++x) dst[x] = 0xc0;
+
+    if (screen_y >= TITLE_TEXT_Y0 && screen_y < TITLE_TEXT_Y1) {
+        const int title_w = gamate_demo_title_width;
+        if (title_w > 0) {
+            const int title_x = (GAMATE_PHOTO_WIDTH_BYTES - title_w * 2) / 2;
+            const uint8_t* bits = gamate_demo_title_bitmap[(screen_y - TITLE_TEXT_Y0) >> 1];
+            for (int x = 0; x < title_w; ++x) {
+                if (bits[x]) {
+                    dst[title_x + x * 2] = 0xff;
+                    dst[title_x + x * 2 + 1] = 0xff;
+                }
+            }
+        }
+    }
+}
 
 void __time_critical_func() dma_handler_VGA() {
     dma_hw->ints0 = 1u << dma_chan_ctrl;
@@ -249,25 +273,7 @@ void __time_critical_func() dma_handler_VGA() {
                 right_dst[x] = gamate_dup_wire_pixel(right[x]);
         }
 
-        if (gamate_demo_title_visible && logical_y >= 408 && logical_y < 436) {
-            const int title_w = gamate_demo_title_width;
-            if (title_w > 0) {
-                const int title_x_1x = (GAMATE_PHOTO_WIDTH_BYTES - title_w) / 2;
-                const int title_x = (title_x_1x - GAMATE_2X_SOURCE_X) * 2;
-                memset(dst + title_x - 4, 0xc0, title_w * 2 + 8);
-                if (logical_y >= 414 && logical_y < 430) {
-                    const uint8_t* bits =
-                        gamate_demo_title_bitmap[(logical_y - 414) >> 1];
-                    for (int x = 0; x < title_w; ++x) {
-                        if (bits[x]) {
-                            dst[title_x + x * 2] = 0xff;
-                            dst[title_x + x * 2 + 1] = 0xff;
-                        }
-                    }
-                }
-            }
-        }
-
+        gamate_vga_draw_demo_title(dst, logical_y);
         dma_channel_set_read_addr(dma_chan_ctrl, output_buffer, false);
         return;
     }
@@ -330,20 +336,16 @@ void __time_critical_func() dma_handler_VGA() {
             }
         }
 
-        /* Demo title belongs to the lower bezel, never to the 160x150 framebuffer. */
-        if (gamate_demo_title_visible && logical_y >= 324 && logical_y < 338) {
-            const int title_w = gamate_demo_title_width;
-            const int title_x = (GAMATE_PHOTO_WIDTH_BYTES - title_w) / 2;
-            if (title_w > 0) {
-                memset(dst + title_x - 2, 0xc0, title_w + 4);
-                if (logical_y >= 327 && logical_y < 335) {
-                    const uint8_t* bits = gamate_demo_title_bitmap[logical_y - 327];
-                    for (int x = 0; x < title_w; ++x)
-                        if (bits[x]) dst[title_x + x] = 0xff;
-                }
-            }
-        }
+        gamate_vga_draw_demo_title(dst, logical_y);
+        dma_channel_set_read_addr(dma_chan_ctrl, output_buffer, false);
+        return;
+    }
 
+    if (graphics_mode != TEXTMODE_DEFAULT && graphics_mode != TEXTMODE_53x30 &&
+        graphics_mode != TEXTMODE_160x100 &&
+        gamate_demo_title_visible && screen_line >= 448 && screen_line < 472) {
+        uint8_t* dst = (uint8_t *)(*output_buffer) + shift_picture;
+        gamate_vga_draw_demo_title(dst, screen_line);
         dma_channel_set_read_addr(dma_chan_ctrl, output_buffer, false);
         return;
     }
