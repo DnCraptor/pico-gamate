@@ -8,6 +8,10 @@
 #include "pico/time.h"
 #include "pico/multicore.h"
 #include "hardware/clocks.h"
+
+extern volatile bool gamate_demo_title_visible;
+extern volatile uint8_t gamate_demo_title_width;
+extern uint8_t gamate_demo_title_bitmap[8][156];
 #include "gamate_photo.h"
 
 //PIO параметры
@@ -41,6 +45,8 @@ static uint8_t* gamate_hdmi_sides_sram = NULL;
 static uint8_t gamate_hdmi_scale_x[GAMATE_HDMI_W];
 static uint8_t gamate_hdmi_scale_y[GAMATE_HDMI_H];
 static bool gamate_hdmi_ready = false;
+static uint8_t gamate_hdmi_demo_bg = 128;
+static uint8_t gamate_hdmi_demo_fg = 128;
 
 //текстовый буфер
 uint8_t* text_buffer = NULL;
@@ -98,8 +104,23 @@ static bool gamate_hdmi_prepare_sram() {
 }
 
 static void gamate_hdmi_load_photo_palette() {
-    for (int i = 0; i < GAMATE_HDMI_PALETTE_SIZE; i++)
-        graphics_set_palette(gamate_hdmi_palette_slot(i), gamate_hdmi_palette_rgb[i]);
+    uint32_t darkest_luma = UINT32_MAX;
+    uint32_t brightest_luma = 0;
+    for (int i = 0; i < GAMATE_HDMI_PALETTE_SIZE; i++) {
+        const uint32_t rgb = gamate_hdmi_palette_rgb[i];
+        graphics_set_palette(gamate_hdmi_palette_slot(i), rgb);
+        const uint32_t luma = ((rgb >> 16) & 0xff) * 299u +
+                              ((rgb >> 8) & 0xff) * 587u +
+                              (rgb & 0xff) * 114u;
+        if (luma < darkest_luma) {
+            darkest_luma = luma;
+            gamate_hdmi_demo_bg = gamate_hdmi_palette_slot(i);
+        }
+        if (luma > brightest_luma) {
+            brightest_luma = luma;
+            gamate_hdmi_demo_fg = gamate_hdmi_palette_slot(i);
+        }
+    }
 }
 
 static void gamate_hdmi_load_text_palette() {
@@ -290,6 +311,18 @@ static void __scratch_y("hdmi_driver") dma_handler_HDMI() {
                         : GAMATE_HDMI_Y + y - (GAMATE_HDMI_Y + GAMATE_HDMI_H);
                     memcpy(output_buffer, gamate_hdmi_outside_sram + row * SCREEN_WIDTH,
                            SCREEN_WIDTH);
+                    if (gamate_demo_title_visible && y >= 216 && y < 228) {
+                        const int title_w = gamate_demo_title_width;
+                        const int title_x = (SCREEN_WIDTH - title_w) / 2;
+                        if (title_w > 0) {
+                            memset(output_buffer + title_x - 2, gamate_hdmi_demo_bg, title_w + 4);
+                            if (y >= 218 && y < 226) {
+                                const uint8_t* bits = gamate_demo_title_bitmap[y - 218];
+                                for (int x = 0; x < title_w; ++x)
+                                    if (bits[x]) output_buffer[title_x + x] = gamate_hdmi_demo_fg;
+                            }
+                        }
+                    }
                     break;
                 }
 

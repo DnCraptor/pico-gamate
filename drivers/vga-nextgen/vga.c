@@ -13,6 +13,10 @@
 #include "pico/stdlib.h"
 #include "stdlib.h"
 
+extern volatile bool gamate_demo_title_visible;
+extern volatile uint8_t gamate_demo_title_width;
+extern uint8_t gamate_demo_title_bitmap[8][156];
+
 uint16_t pio_program_VGA_instructions[] = {
     //     .wrap_target
     0x6008, //  0: out    pins, 8
@@ -217,6 +221,20 @@ void __time_critical_func() dma_handler_VGA() {
             const uint32_t* right32 = (const uint32_t *)(bezel + GAMATE_PHOTO_LEFT_PAD_BYTES);
             for (int i = 0; i < GAMATE_PHOTO_RIGHT_BYTES / 4; ++i) {
                 right_dst[i] = right32[i];
+            }
+        }
+
+        /* Demo title belongs to the bezel, never to the 160x150 framebuffer. */
+        if (gamate_demo_title_visible && logical_y >= 428 && logical_y < 440) {
+            const int title_w = gamate_demo_title_width;
+            const int title_x = (GAMATE_PHOTO_WIDTH_BYTES - title_w) / 2;
+            if (title_w > 0) {
+                memset(dst + title_x - 2, 0xc0, title_w + 4);
+                if (logical_y >= 430 && logical_y < 438) {
+                    const uint8_t* bits = gamate_demo_title_bitmap[logical_y - 430];
+                    for (int x = 0; x < title_w; ++x)
+                        if (bits[x]) dst[title_x + x] = 0xff;
+                }
             }
         }
 

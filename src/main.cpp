@@ -325,8 +325,87 @@ bool filebrowser_loadfile(const char pathname[256]) {
     return true;
 }
 
+
+extern "C" {
+volatile bool gamate_demo_title_visible = false;
+volatile uint8_t gamate_demo_title_width = 0;
+uint8_t gamate_demo_title_bitmap[8][156] = { 0 };
+}
+
+static bool demo_requested = false;
+static bool demo_active = false;
+static bool demo_advance_pending = false;
+static uint64_t demo_game_started_at = 0;
+static uint64_t demo_title_until = 0;
+static char demo_current_name[79] = { 0 };
+static uint8_t demo_duration = 0;
+static const uint8_t demo_minutes[] = { 1, 3, 5, 10 };
+
+static void demo_prepare_title_bitmap(void) {
+    gamate_demo_title_visible = false;
+    memset(gamate_demo_title_bitmap, 0, sizeof(gamate_demo_title_bitmap));
+
+    size_t len = strlen(demo_current_name);
+    if (len > 26) len = 26;
+    gamate_demo_title_width = (uint8_t)(len * 6);
+
+    for (size_t c = 0; c < len; ++c) {
+        const uint8_t *glyph = &font_6x8[(uint8_t)demo_current_name[c] * 8];
+        for (int gy = 0; gy < 8; ++gy) {
+            uint8_t bits = glyph[gy];
+            uint8_t *dst = &gamate_demo_title_bitmap[gy][c * 6];
+            for (int gx = 0; gx < 6; ++gx) {
+                dst[gx] = bits & 1;
+                bits >>= 1;
+            }
+        }
+    }
+}
+
+static bool demo_load_next_rom(const char *after_name) {
+    if (FR_OK != f_mount(&fs, "SD", 1))
+        return false;
+
+    DIR dir;
+    FILINFO info;
+    if (FR_OK != f_opendir(&dir, HOME_DIR))
+        return false;
+
+    char best[79] = { 0 };
+    while (f_readdir(&dir, &info) == FR_OK && info.fname[0] != '\0') {
+        if (info.fattrib & AM_DIR)
+            continue;
+        if (!isExecutable(info.fname, "bin"))
+            continue;
+        if (after_name && after_name[0] && strcmp(info.fname, after_name) <= 0)
+            continue;
+        if (!best[0] || strcmp(info.fname, best) < 0) {
+            strncpy(best, info.fname, sizeof(best) - 1);
+            best[sizeof(best) - 1] = '\0';
+        }
+    }
+    f_closedir(&dir);
+
+    if (!best[0])
+        return false;
+
+    char pathname[256];
+    snprintf(pathname, sizeof(pathname), "%s\\%s", HOME_DIR, best);
+    if (!filebrowser_loadfile(pathname))
+        return false;
+
+    strncpy(demo_current_name, best, sizeof(demo_current_name) - 1);
+    demo_current_name[sizeof(demo_current_name) - 1] = '\0';
+    demo_prepare_title_bitmap();
+    demo_game_started_at = time_us_64();
+    demo_title_until = demo_game_started_at + 5000000ull;
+    gamate_demo_title_visible = gamate_demo_title_width != 0;
+    return true;
+}
+
 void filebrowser(const char pathname[256], const char executables[11]) {
     bool debounce = true;
+    bool demo_debounce = false;
     char basepath[256];
     char tmp[TEXTMODE_COLS + 1];
     strcpy(basepath, pathname);
@@ -353,17 +432,17 @@ void filebrowser(const char pathname[256], const char executables[11]) {
         auto off = 0;
         draw_text("START", off, 29, 7, 0);
         off += 5;
-        draw_text(" Run at cursor ", off, 29, 0, 3);
-        off += 16;
+        draw_text(" Run ", off, 29, 0, 3);
+        off += 5;
         draw_text("SELECT", off, 29, 7, 0);
         off += 6;
-        draw_text(" Run previous  ", off, 29, 0, 3);
+        draw_text(" Previous ", off, 29, 0, 3);
+        off += 10;
+        draw_text("B", off, 29, 7, 0);
+        off += 1;
+        draw_text(" Demo ", off, 29, 0, 3);
 #ifndef TFT
-        off += 16;
-        draw_text("ARROWS", off, 29, 7, 0);
         off += 6;
-        draw_text(" Navigation    ", off, 29, 0, 3);
-        off += 16;
         draw_text("A/F10", off, 29, 7, 0);
         off += 5;
         draw_text(" USB DRV ", off, 29, 0, 3);
@@ -410,7 +489,14 @@ void filebrowser(const char pathname[256], const char executables[11]) {
                 debounce = !(gamepad1_bits.start);
             }
 
-            // ESCAPE
+            if (!gamepad1_bits.b)
+                demo_debounce = true;
+            if (demo_debounce && gamepad1_bits.b) {
+                demo_requested = true;
+                return;
+            }
+
+            // ESCAPE / run previous ROM
             if (gamepad1_bits.select) {
                 return;
             }
@@ -733,6 +819,7 @@ const MenuItem menu_items[] = {
         { "Keep aspect ratio: %s",     ARRAY, &settings.aspect_ratio,  nullptr, 1, {"NO ",       "YES"}},
 #endif
         { "Instant ignition simulation: %s",     ARRAY, &settings.instant_ignition,  nullptr, 1, {"NO ",       "YES"}},
+        { "Demo game time: %s min", ARRAY, &demo_duration, nullptr, 3, { "1 ", "3 ", "5 ", "10" } },
 #if SOFTTV
         { "" },
         { "TV system %s", ARRAY, &tv_out_mode.tv_system, nullptr, 1, { "PAL ", "NTSC" } },
@@ -1192,9 +1279,26 @@ int __time_critical_func(main)() {
     load_config();
     update_palette();
 
+    bool need_browser = true;
     while (true) {
-        graphics_set_mode(TEXTMODE_DEFAULT);
-        filebrowser(HOME_DIR, "bin");
+        if (need_browser) {
+            graphics_set_mode(TEXTMODE_DEFAULT);
+            demo_requested = false;
+            filebrowser(HOME_DIR, "bin");
+
+            if (demo_requested) {
+                demo_active = true;
+                demo_current_name[0] = '\0';
+                if (!demo_load_next_rom(nullptr)) {
+                    demo_active = false;
+                    continue;
+                }
+            } else {
+                demo_active = false;
+                gamate_demo_title_visible = false;
+            }
+            need_browser = false;
+        }
         graphics_set_buffer((uint8_t *)SCREEN, 160, 150);
 
 #if SOFTTV
@@ -1248,6 +1352,18 @@ int __time_critical_func(main)() {
             Run6502(&cpu);
             screen_update((uint8_t *)SCREEN, settings.ghosting); // It takes exactly 72900 clocks at 4.433MHz per frame.
 
+            if (demo_active) {
+                gamate_demo_title_visible = gamate_demo_title_width != 0 &&
+                                            time_us_64() < demo_title_until;
+                const uint8_t duration_index = demo_duration < count_of(demo_minutes)
+                                             ? demo_duration : 0;
+                const uint64_t duration_us = (uint64_t)demo_minutes[duration_index] * 60ull * 1000000ull;
+                if (time_us_64() - demo_game_started_at >= duration_us) {
+                    demo_advance_pending = true;
+                    reboot = true;
+                }
+            }
+
             cpu.IPeriod = 32768 - 7364;
 
             if (gamepad1_bits.start && gamepad1_bits.select) {
@@ -1265,7 +1381,18 @@ int __time_critical_func(main)() {
             tight_loop_contents();
         }
 
+        if (demo_active && demo_advance_pending) {
+            demo_advance_pending = false;
+            if (demo_load_next_rom(demo_current_name)) {
+                reboot = false;
+                continue;
+            }
+            demo_active = false;
+            gamate_demo_title_visible = false;
+        }
+
         reboot = false;
+        need_browser = true;
     }
     __unreachable();
 }

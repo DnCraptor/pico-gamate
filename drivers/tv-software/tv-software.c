@@ -2,6 +2,7 @@
 //программный композит
 #include <stdio.h>
 #include "graphics.h"
+#include "gamate_photo.h"
 #include "hardware/clocks.h"
 #include <stdalign.h>
 
@@ -14,6 +15,10 @@
 #include "hardware/pio.h"
 #include "pico/stdlib.h"
 #include "stdlib.h"
+
+extern volatile bool gamate_demo_title_visible;
+extern volatile uint8_t gamate_demo_title_width;
+extern uint8_t gamate_demo_title_bitmap[8][156];
 
 #if defined(VGA_BASE_PIN)
 #undef TV_BASE_PIN
@@ -142,6 +147,60 @@ static uint32_t* conv_color[2];
 
 //палитра сохранённая
 static uint8_t __scratch_y("buff4") paletteRGB[3][256]; //768 байт
+
+/* The time-critical line generator must not fetch the photo through XIP. */
+static uint8_t* gamate_tv_outside_sram = NULL;
+static uint8_t* gamate_tv_sides_sram = NULL;
+static uint8_t gamate_tv_scale_x[GAMATE_TV_W];
+static uint8_t gamate_tv_scale_y[GAMATE_TV_H];
+static bool gamate_tv_ready = false;
+static uint8_t gamate_tv_demo_bg = GAMATE_TV_PALETTE_BASE;
+static uint8_t gamate_tv_demo_fg = GAMATE_TV_PALETTE_BASE;
+
+static bool gamate_tv_prepare_sram(void) {
+    if (gamate_tv_ready) return true;
+
+    gamate_tv_outside_sram = (uint8_t *)malloc(GAMATE_TV_OUTSIDE_SIZE);
+    gamate_tv_sides_sram = (uint8_t *)malloc(GAMATE_TV_SIDES_SIZE);
+    if (!gamate_tv_outside_sram || !gamate_tv_sides_sram) {
+        free(gamate_tv_outside_sram);
+        free(gamate_tv_sides_sram);
+        gamate_tv_outside_sram = NULL;
+        gamate_tv_sides_sram = NULL;
+        return false;
+    }
+
+    memcpy(gamate_tv_outside_sram, gamate_tv_outside, GAMATE_TV_OUTSIDE_SIZE);
+    memcpy(gamate_tv_sides_sram, gamate_tv_sides, GAMATE_TV_SIDES_SIZE);
+    for (int x = 0; x < GAMATE_TV_W; x++)
+        gamate_tv_scale_x[x] = (uint8_t)((x * 160) / GAMATE_TV_W);
+    for (int y = 0; y < GAMATE_TV_H; y++)
+        gamate_tv_scale_y[y] = (uint8_t)((y * 150) / GAMATE_TV_H);
+
+    gamate_tv_ready = true;
+    return true;
+}
+
+static void gamate_tv_load_photo_palette(void) {
+    uint32_t darkest_luma = UINT32_MAX;
+    uint32_t brightest_luma = 0;
+    for (int i = 0; i < GAMATE_TV_PALETTE_SIZE; i++) {
+        const uint8_t slot = (uint8_t)(GAMATE_TV_PALETTE_BASE + i);
+        const uint32_t rgb = gamate_tv_palette_rgb[i];
+        graphics_set_palette(slot, rgb);
+        const uint32_t luma = ((rgb >> 16) & 0xff) * 299u +
+                              ((rgb >> 8) & 0xff) * 587u +
+                              (rgb & 0xff) * 114u;
+        if (luma < darkest_luma) {
+            darkest_luma = luma;
+            gamate_tv_demo_bg = slot;
+        }
+        if (luma > brightest_luma) {
+            brightest_luma = luma;
+            gamate_tv_demo_fg = slot;
+        }
+    }
+}
 
 static repeating_timer_t video_timer;
 
@@ -1074,6 +1133,75 @@ static bool __time_critical_func(video_timer_callbackTV)(repeating_timer_t* rt) 
                             }
                         }
                         break;
+                        case GRAPHICSMODE_ASPECT: {
+                            if (!gamate_tv_ready) {
+                                memset(output_buffer8, video_mode.LVL_BLACK_TMPL, video_mode.img_W);
+                                break;
+                            }
+
+                            int next_ibuf = 0x100;
+                            int x = 0;
+
+                            const uint8_t* game_row = NULL;
+                            if (y >= GAMATE_TV_Y && y < GAMATE_TV_Y + GAMATE_TV_H)
+                                game_row = input_buffer + gamate_tv_scale_y[y - GAMATE_TV_Y] * graphics_buffer.width;
+
+                            uint8_t color;
+                            if (y < GAMATE_TV_Y || y >= GAMATE_TV_Y + GAMATE_TV_H) {
+                                const int row = (y < GAMATE_TV_Y)
+                                    ? y
+                                    : GAMATE_TV_Y + y - (GAMATE_TV_Y + GAMATE_TV_H);
+                                color = gamate_tv_outside_sram[row * 320];
+                            } else {
+                                const int side_row = y - GAMATE_TV_Y;
+                                color = gamate_tv_sides_sram[side_row * (320 - GAMATE_TV_W)];
+                            }
+
+                            uint32_t cout32 = conv_color[li][color];
+                            uint8_t* c_4 = (uint8_t*)&cout32;
+                            output_buffer8 += buffer_shift;
+
+                            for (int i = 0; i < video_mode.img_W - d_end; i++) {
+                                *output_buffer8++ = c_4[i & 3];
+                                next_ibuf -= di;
+                                if (next_ibuf <= 0) {
+                                    x++;
+                                    if (x >= 320) x = 319;
+
+                                    if (y < GAMATE_TV_Y || y >= GAMATE_TV_Y + GAMATE_TV_H) {
+                                        const int row = (y < GAMATE_TV_Y)
+                                            ? y
+                                            : GAMATE_TV_Y + y - (GAMATE_TV_Y + GAMATE_TV_H);
+                                        color = gamate_tv_outside_sram[row * 320 + x];
+                                    } else if (x < GAMATE_TV_X) {
+                                        const int side_row = y - GAMATE_TV_Y;
+                                        color = gamate_tv_sides_sram[side_row * (320 - GAMATE_TV_W) + x];
+                                    } else if (x < GAMATE_TV_X + GAMATE_TV_W) {
+                                        color = game_row[gamate_tv_scale_x[x - GAMATE_TV_X]];
+                                    } else {
+                                        const int side_row = y - GAMATE_TV_Y;
+                                        const int side_x = GAMATE_TV_X + x - (GAMATE_TV_X + GAMATE_TV_W);
+                                        color = gamate_tv_sides_sram[side_row * (320 - GAMATE_TV_W) + side_x];
+                                    }
+
+                                    if (gamate_demo_title_visible && y >= 216 && y < 228) {
+                                        const int title_w = gamate_demo_title_width;
+                                        const int title_x = (320 - title_w) / 2;
+                                        if (title_w > 0 && x >= title_x - 2 && x < title_x + title_w + 2) {
+                                            color = gamate_tv_demo_bg;
+                                            if (y >= 218 && y < 226 &&
+                                                x >= title_x && x < title_x + title_w &&
+                                                gamate_demo_title_bitmap[y - 218][x - title_x])
+                                                color = gamate_tv_demo_fg;
+                                        }
+                                    }
+                                    cout32 = conv_color[li][color];
+                                    c_4 = (uint8_t*)&cout32;
+                                    next_ibuf += 0x100;
+                                }
+                            }
+                        }
+                        break;
                     }
             }
         }
@@ -1110,6 +1238,7 @@ void graphics_init() {
 
     //заполнение палитры по умолчанию(ч.б.)
     for (int ci = 0; ci < 256; ci++) graphics_set_palette(ci, (ci << 16) | (ci << 8) | ci); //
+    gamate_tv_prepare_sram();
 
 
     //настройка рабочей SM TV
@@ -1254,6 +1383,7 @@ void clrScr(const uint8_t color) {
 }
 
 void graphics_set_mode(const enum graphics_mode_t mode) {
+    if (mode == GRAPHICSMODE_ASPECT) gamate_tv_load_photo_palette();
     tv_out_mode.mode_bpp = mode;
 
     // A television standard is a coherent timing set, not three independent
