@@ -77,7 +77,8 @@ SETTINGS settings = {
     .rgb2 = 0xCC0066,
     .rgb3 = 0x663300,
     .instant_ignition = false,
-    .gray_level = 1
+    .gray_level = 1,
+    .tv_system = 0
 };
 
 typedef struct input_bits_s {
@@ -819,6 +820,7 @@ static void settings_defaults() {
 #endif
     settings.gray_lines = 0;
     settings.gray_level = 1;
+    settings.tv_system = 0;
     settings.ghosting = 4;
     settings.palette = 0;
     settings.save_slot = 0;
@@ -834,6 +836,7 @@ static void settings_sanitize() {
     settings.swap_ab = settings.swap_ab ? true : false;
     settings.instant_ignition = settings.instant_ignition ? true : false;
     if (settings.gray_level > 3) settings.gray_level = 1;
+    if (settings.tv_system > 1) settings.tv_system = 0;
     if (settings.ghosting > 5) settings.ghosting = 4;
     if (settings.save_slot > 5) settings.save_slot = 0;
     if (settings.palette > count_of(palettes)) settings.palette = 0;
@@ -882,7 +885,8 @@ void load_config() {
             UINT bytes_read = 0;
             if (FR_OK == f_read(&file, &loaded, sizeof(loaded), &bytes_read) &&
                 (bytes_read == sizeof(loaded) ||
-                 bytes_read == sizeof(loaded) - 1)) {
+                 bytes_read == sizeof(loaded) - 1 ||
+                 bytes_read == sizeof(loaded) - 2)) {
                 settings = loaded;
             }
             f_close(&file);
@@ -890,6 +894,9 @@ void load_config() {
     }
 
     settings_sanitize();
+#if SOFTTV
+    tv_out_mode.tv_system = settings.tv_system ? g_TV_OUT_NTSC : g_TV_OUT_PAL;
+#endif
     rgb0 = settings.rgb0;
     rgb1 = settings.rgb1;
     rgb2 = settings.rgb2;
@@ -978,7 +985,7 @@ const MenuItem menu_items[] = {
         { "Demo game time: %s", ARRAY, &demo_duration, nullptr, 5, { "30 sec", "45 sec", "1 min ", "3 min ", "5 min ", "10 min" } },
 #if SOFTTV
         { "" },
-        { "TV system %s", ARRAY, &tv_out_mode.tv_system, nullptr, 1, { "PAL ", "NTSC" } },
+        { "TV system %s", ARRAY, &settings.tv_system, nullptr, 1, { "PAL ", "NTSC" } },
         { "Colors: %s", ARRAY, &color_mode, nullptr, 1, { "NO ", "YES" } },
 #endif
     //{ "Player 1: %s",        ARRAY, &player_1_input, 2, { "Keyboard ", "Gamepad 1", "Gamepad 2" }},
@@ -1280,8 +1287,14 @@ void menu() {
     graphics_set_offset(0, 0);
     graphics_set_mode(settings.aspect_ratio ? GRAPHICSMODE_ASPECT : GRAPHICSMODE_3X3);
 #elif SOFTTV
-    graphics_set_offset(0, 0);
-    graphics_set_mode(settings.aspect_ratio ? GRAPHICSMODE_ASPECT : GRAPHICSMODE_DEFAULT);
+    tv_out_mode.tv_system = settings.tv_system ? g_TV_OUT_NTSC : g_TV_OUT_PAL;
+    if (settings.aspect_ratio) {
+        graphics_set_offset(0, 0);
+        graphics_set_mode(GRAPHICSMODE_ASPECT);
+    } else {
+        graphics_set_offset(80, 40);
+        graphics_set_mode(GRAPHICSMODE_DEFAULT);
+    }
 #else
     graphics_set_mode(GRAPHICSMODE_DEFAULT);
 #endif
@@ -1548,8 +1561,14 @@ int __time_critical_func(main)() {
         graphics_set_offset(0, 0);
         graphics_set_mode(settings.aspect_ratio ? GRAPHICSMODE_ASPECT : GRAPHICSMODE_3X3);
 #elif SOFTTV
-        graphics_set_offset(0, 0);
-        graphics_set_mode(settings.aspect_ratio ? GRAPHICSMODE_ASPECT : GRAPHICSMODE_DEFAULT);
+        tv_out_mode.tv_system = settings.tv_system ? g_TV_OUT_NTSC : g_TV_OUT_PAL;
+        if (settings.aspect_ratio) {
+            graphics_set_offset(0, 0);
+            graphics_set_mode(GRAPHICSMODE_ASPECT);
+        } else {
+            graphics_set_offset(80, 40);
+            graphics_set_mode(GRAPHICSMODE_DEFAULT);
+        }
 #else
         settings.aspect_ratio = false;
         graphics_set_mode(GRAPHICSMODE_DEFAULT);
