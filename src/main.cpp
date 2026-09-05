@@ -1568,6 +1568,10 @@ int __time_critical_func(main)() {
 
         if (demo_active && demo_advance_pending) {
             demo_advance_pending = false;
+#ifdef HWAY
+            SendAY(0);
+            SendAY(AY_Enable);
+#endif
             if (demo_load_next_rom(demo_current_name)) {
                 reboot = false;
                 continue;
