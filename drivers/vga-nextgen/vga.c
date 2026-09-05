@@ -13,6 +13,7 @@
 #include "pico/stdlib.h"
 #include "stdlib.h"
 
+extern volatile uint8_t gamate_gray_lines;
 extern volatile bool gamate_demo_title_visible;
 extern volatile uint8_t gamate_demo_title_width;
 extern uint8_t gamate_demo_title_bitmap[8][156];
@@ -107,6 +108,22 @@ static uint16_t* txt_palette_fast = NULL;
 
 enum graphics_mode_t graphics_mode;
 
+enum {
+    GAMATE_2X_SOURCE_X = 160,
+    GAMATE_2X_SOURCE_Y = 120,
+    GAMATE_2X_SCREEN_X = 160,
+    GAMATE_2X_SCREEN_Y = 90,
+    GAMATE_2X_SCREEN_W = 320,
+    GAMATE_2X_SCREEN_H = 300,
+    GAMATE_2X_SIDE_SOURCE_W = 80,
+};
+
+static inline uint16_t gamate_dup_wire_pixel(const uint8_t p) {
+    return (uint16_t)p | ((uint16_t)p << 8);
+}
+
+enum { GAMATE_GRAY_WIRE = 0xd5 };
+
 
 void __time_critical_func() dma_handler_VGA() {
     dma_hw->ints0 = 1u << dma_chan_ctrl;
@@ -149,6 +166,111 @@ void __time_critical_func() dma_handler_VGA() {
     int y, line_number;
 
     uint32_t* * output_buffer = &lines_pattern[2 + (screen_line & 1)];
+
+    if (graphics_mode == GRAPHICSMODE_ASPECT_2X) {
+        const int logical_y = screen_line;
+        uint8_t* dst = (uint8_t *)(*output_buffer) + shift_picture;
+        uint16_t* dst16 = (uint16_t *)dst;
+
+        if (!gamate_photo_ram_ready) {
+            uint32_t* dst32 = (uint32_t *)dst;
+            uint32_t color32 = bg_color[(frame_number & is_flash_frame) & 1];
+            for (int i = 0; i < GAMATE_PHOTO_WIDTH_BYTES / 4; ++i)
+                dst32[i] = color32;
+            dma_channel_set_read_addr(dma_chan_ctrl, output_buffer, false);
+            return;
+        }
+
+        const int source_y = GAMATE_2X_SOURCE_Y + (logical_y >> 1);
+
+        if (logical_y < GAMATE_2X_SCREEN_Y ||
+            logical_y >= GAMATE_2X_SCREEN_Y + GAMATE_2X_SCREEN_H) {
+            const int photo_y = source_y < GAMATE_PHOTO_SCREEN_Y
+                ? source_y - GAMATE_PHOTO_CROP_Y
+                : GAMATE_PHOTO_TOP_ROWS +
+                  source_y - (GAMATE_PHOTO_SCREEN_Y + GAMATE_PHOTO_SCREEN_H);
+            const uint8_t* photo =
+                gamate_photo_outside_ram +
+                photo_y * GAMATE_PHOTO_CROP_W_BYTES +
+                (GAMATE_2X_SOURCE_X - GAMATE_PHOTO_CROP_X_BYTES);
+
+            for (int x = 0; x < 320; ++x)
+                dst16[x] = gamate_dup_wire_pixel(photo[x]);
+        } else {
+            const int screen_y = (logical_y - GAMATE_2X_SCREEN_Y) >> 1;
+            const uint8_t* bezel =
+                gamate_photo_sides_ram + screen_y * GAMATE_PHOTO_SIDE_BYTES;
+
+            const uint8_t* left =
+                bezel + (GAMATE_2X_SOURCE_X - GAMATE_PHOTO_CROP_X_BYTES);
+            for (int x = 0; x < GAMATE_2X_SIDE_SOURCE_W; ++x)
+                dst16[x] = gamate_dup_wire_pixel(left[x]);
+
+            uint8_t* pixels = dst + GAMATE_2X_SCREEN_X;
+            uint16_t* current_palette =
+                palette[((screen_y & is_flash_line) +
+                         (frame_number & is_flash_frame)) & 1];
+
+            const bool gray_vertical = (gamate_gray_lines & 1) != 0;
+            const bool gray_horizontal = (gamate_gray_lines & 2) != 0;
+
+            if (gray_horizontal && ((logical_y - GAMATE_2X_SCREEN_Y) & 1)) {
+                /* Horizontal: replace only every second gameplay row.
+                 * The backplane on both sides remains untouched. */
+                memset(pixels, GAMATE_GRAY_WIRE, GAMATE_2X_SCREEN_W);
+            } else {
+                const uint8_t* src =
+                    graphics_buffer + screen_y * graphics_buffer_width;
+
+                if (gray_vertical) {
+                    /* Vertical: one useful pixel, one gray pixel.
+                     * With Horizontal+Vertical ('Both'), this is applied
+                     * only on the useful rows left by Horizontal. */
+                    for (int x = 0; x < GAMATE_PHOTO_SCREEN_W_PIXELS; ++x) {
+                        const uint16_t pair = current_palette[src[x]];
+                        pixels[x * 2] = (GAMATE_2X_SCREEN_X + x * 2) & 1
+                                      ? (uint8_t)(pair >> 8)
+                                      : (uint8_t)pair;
+                        pixels[x * 2 + 1] = GAMATE_GRAY_WIRE;
+                    }
+                } else {
+                    /* No vertical replacement: keep the existing exact 2x
+                     * horizontal pixel duplication. */
+                    uint16_t* pixels16 = (uint16_t *)pixels;
+                    for (int x = 0; x < GAMATE_PHOTO_SCREEN_W_PIXELS; ++x)
+                        pixels16[x] = current_palette[src[x]];
+                }
+            }
+
+            const uint8_t* right = bezel + GAMATE_PHOTO_LEFT_BYTES;
+            uint16_t* right_dst =
+                (uint16_t *)(dst + GAMATE_2X_SCREEN_X + GAMATE_2X_SCREEN_W);
+            for (int x = 0; x < GAMATE_2X_SIDE_SOURCE_W; ++x)
+                right_dst[x] = gamate_dup_wire_pixel(right[x]);
+        }
+
+        if (gamate_demo_title_visible && logical_y >= 408 && logical_y < 436) {
+            const int title_w = gamate_demo_title_width;
+            if (title_w > 0) {
+                const int title_x_1x = (GAMATE_PHOTO_WIDTH_BYTES - title_w) / 2;
+                const int title_x = (title_x_1x - GAMATE_2X_SOURCE_X) * 2;
+                memset(dst + title_x - 4, 0xc0, title_w * 2 + 8);
+                if (logical_y >= 414 && logical_y < 430) {
+                    const uint8_t* bits =
+                        gamate_demo_title_bitmap[(logical_y - 414) >> 1];
+                    for (int x = 0; x < title_w; ++x) {
+                        if (bits[x]) {
+                            dst[title_x + x * 2] = 0xff;
+                            dst[title_x + x * 2 + 1] = 0xff;
+                        }
+                    }
+                }
+            }
+        }
+
+        dma_channel_set_read_addr(dma_chan_ctrl, output_buffer, false);
+        return;
+    }
 
     if (graphics_mode == GRAPHICSMODE_ASPECT) {
         const int logical_y = screen_line;
@@ -499,6 +621,7 @@ void graphics_set_mode(enum graphics_mode_t mode) {
         case CGA_160x200x16:
         case GRAPHICSMODE_DEFAULT:
         case GRAPHICSMODE_ASPECT:
+        case GRAPHICSMODE_ASPECT_2X:
         case GRAPHICSMODE_3X3:
         case TGA_320x200x16:
 

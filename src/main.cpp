@@ -66,6 +66,7 @@ SETTINGS settings = {
     .version = 1,
     .swap_ab = false,
     .aspect_ratio = false,
+    .gray_lines = 0,
     .ghosting = 4,
     .palette = 0,
     .save_slot = 0,
@@ -327,6 +328,7 @@ bool filebrowser_loadfile(const char pathname[256]) {
 
 
 extern "C" {
+volatile uint8_t gamate_gray_lines = 0;
 volatile bool gamate_demo_title_visible = false;
 volatile uint8_t gamate_demo_title_width = 0;
 uint8_t gamate_demo_title_bitmap[8][156] = { 0 };
@@ -339,6 +341,7 @@ static uint64_t demo_game_started_at = 0;
 static uint64_t demo_title_until = 0;
 static char demo_current_name[79] = { 0 };
 static uint8_t demo_duration = 0;
+static uint8_t gray_lines_menu = 0;
 static const uint8_t demo_minutes[] = { 1, 3, 5, 10 };
 
 static void demo_prepare_title_bitmap(void) {
@@ -816,8 +819,13 @@ const MenuItem menu_items[] = {
         { "RGB1: %06Xh ", HEX, &rgb1, nullptr, 0xFFFFFF },
         { "RGB2: %06Xh ", HEX, &rgb2, nullptr, 0xFFFFFF },
         { "RGB3: %06Xh ", HEX, &rgb3, nullptr, 0xFFFFFF },
-#if VGA || SOFTTV
-        { "Keep aspect ratio: %s",     ARRAY, &settings.aspect_ratio,  nullptr, 1, {"NO ",       "YES"}},
+#if VGA
+        { "Aspect ratio: %s",          ARRAY, &settings.aspect_ratio,  nullptr, 2, {"4:3", "1:1", "1:2"}},
+#elif SOFTTV
+        { "Aspect ratio: %s",          ARRAY, &settings.aspect_ratio,  nullptr, 1, {"1:1", "4:3"}},
+#endif
+#if VGA
+        { "Gray lines: %s",            ARRAY, &gray_lines_menu,          nullptr, 4, {"N/A       ", "No        ", "Vertical  ", "Horizontal", "Both      "}},
 #endif
         { "Instant ignition simulation: %s",     ARRAY, &settings.instant_ignition,  nullptr, 1, {"NO ",       "YES"}},
         { "Demo game time: %s min", ARRAY, &demo_duration, nullptr, 3, { "1 ", "3 ", "5 ", "10" } },
@@ -907,6 +915,9 @@ void menu() {
     bool blink = false;
 
     while (!exit) {
+#if VGA
+        gray_lines_menu = settings.aspect_ratio == 2 ? settings.gray_lines + 1 : 0;
+#endif
         blink = !blink;
         bool hex_edit_mode = false;
         int8_t h_code = keyboard.h_code;
@@ -972,6 +983,18 @@ void menu() {
                         break;
                     case INT:
                     case ARRAY:
+#if VGA
+                        if (item->value == &gray_lines_menu) {
+                            if (settings.aspect_ratio == 2) {
+                                if (gamepad1_bits.right && settings.gray_lines < 3) settings.gray_lines++;
+                                if (gamepad1_bits.left && settings.gray_lines > 0) settings.gray_lines--;
+                                gray_lines_menu = settings.gray_lines + 1;
+                            } else {
+                                gray_lines_menu = 0;
+                            }
+                            break;
+                        }
+#endif
                         if (item->max_value != 0) {
                             uint8_t* value = (uint8_t *)item->value;
                             if (gamepad1_bits.right && *value < item->max_value) {
@@ -1066,7 +1089,11 @@ void menu() {
     tv_out_mode.color_index = color_mode ? 1.0f : 0.0f;
 #endif
 #if VGA
-    if (settings.aspect_ratio) {
+    gamate_gray_lines = settings.gray_lines;
+    if (settings.aspect_ratio == 2) {
+        graphics_set_offset(0, 0);
+        graphics_set_mode(GRAPHICSMODE_ASPECT_2X);
+    } else if (settings.aspect_ratio == 1) {
         graphics_set_offset(0, 0);
         graphics_set_mode(GRAPHICSMODE_ASPECT);
     } else {
@@ -1318,7 +1345,11 @@ int __time_critical_func(main)() {
         tv_out_mode.color_index = color_mode ? 1.0f : 0.0f;
 #endif
 #if VGA
-        if (settings.aspect_ratio) {
+        gamate_gray_lines = settings.gray_lines;
+        if (settings.aspect_ratio == 2) {
+            graphics_set_offset(0, 0);
+            graphics_set_mode(GRAPHICSMODE_ASPECT_2X);
+        } else if (settings.aspect_ratio == 1) {
             graphics_set_offset(0, 0);
             graphics_set_mode(GRAPHICSMODE_ASPECT);
         } else {

@@ -38,6 +38,7 @@ enum graphics_mode_t {
     GRAPHICSMODE_3X3,
     VGA_320x240x256,
     GRAPHICSMODE_ASPECT,
+    GRAPHICSMODE_ASPECT_2X,
     // planar VGA
 };
 
