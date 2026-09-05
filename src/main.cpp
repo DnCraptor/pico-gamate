@@ -300,19 +300,22 @@ bool filebrowser_loadfile(const char pathname[256]) {
 
     multicore_lockout_start_blocking();
     auto flash_target_offset = FLASH_TARGET_OFFSET;
-    const uint32_t ints = save_and_disable_interrupts();
-    flash_range_erase(flash_target_offset, fileinfo.fsize);
-    restore_interrupts(ints);
     if (FR_OK == f_open(&file, pathname, FA_READ)) {
-        uint8_t buffer[FLASH_PAGE_SIZE];
+        static uint8_t buffer[FLASH_SECTOR_SIZE] __aligned(4);
         do {
-            f_read(&file, &buffer, FLASH_PAGE_SIZE, &bytes_read);
+            memset(buffer, 0xff, sizeof(buffer));
+            f_read(&file, buffer, sizeof(buffer), &bytes_read);
             if (bytes_read) {
-                const uint32_t ints = save_and_disable_interrupts();
-                flash_range_program(flash_target_offset, buffer, FLASH_PAGE_SIZE);
-                restore_interrupts(ints);
+                const uint8_t *flash_data =
+                    (const uint8_t *)(XIP_BASE + flash_target_offset);
+                if (memcmp(flash_data, buffer, sizeof(buffer)) != 0) {
+                    const uint32_t ints = save_and_disable_interrupts();
+                    flash_range_erase(flash_target_offset, FLASH_SECTOR_SIZE);
+                    flash_range_program(flash_target_offset, buffer, FLASH_SECTOR_SIZE);
+                    restore_interrupts(ints);
+                }
                 gpio_put(PICO_DEFAULT_LED_PIN, flash_target_offset >> 13 & 1);
-                flash_target_offset += FLASH_PAGE_SIZE;
+                flash_target_offset += FLASH_SECTOR_SIZE;
             }
         }
         while (bytes_read != 0);
