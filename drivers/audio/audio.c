@@ -27,9 +27,44 @@
 
 #include "audio.h"
 
+#ifndef AUDIO_PWM_PIN
+#include "hardware/irq.h"
+#endif
+
 #ifdef AUDIO_PWM_PIN
 #include "hardware/pwm.h"
 #include "hardware/clocks.h"
+#endif
+
+#ifndef AUDIO_PWM_PIN
+/* Keep the I2S clocks running if the producer misses a DMA boundary. */
+static i2s_config_t *i2s_dma_irq_config = NULL;
+static volatile bool i2s_dma_started = false;
+static volatile bool i2s_dma_holding = false;
+static volatile bool i2s_dma_buffer_ready = false;
+static uint32_t i2s_hold_sample = 0;
+static uint32_t i2s_next_hold_sample = 0;
+
+static void __not_in_flash_func(i2s_dma_irq1_handler)(void) {
+    i2s_config_t *cfg = i2s_dma_irq_config;
+    if (!cfg) return;
+
+    const uint32_t mask = 1u << cfg->dma_channel;
+    if (!(dma_hw->ints1 & mask)) return;
+    dma_hw->ints1 = mask;
+
+    if (i2s_dma_buffer_ready) {
+        i2s_dma_buffer_ready = false;
+        i2s_dma_holding = false;
+        i2s_hold_sample = i2s_next_hold_sample;
+        dma_channel_set_read_addr(cfg->dma_channel, cfg->dma_buf, false);
+        dma_channel_set_trans_count(cfg->dma_channel, cfg->dma_trans_count, true);
+    } else {
+        i2s_dma_holding = true;
+        dma_channel_set_read_addr(cfg->dma_channel, &i2s_hold_sample, false);
+        dma_channel_set_trans_count(cfg->dma_channel, 1, true);
+    }
+}
 #endif
 
 /**
@@ -133,6 +168,20 @@ void i2s_init(i2s_config_t *i2s_config) {
                           false                                       // Start immediately
     );
 
+#ifndef AUDIO_PWM_PIN
+    i2s_dma_irq_config = i2s_config;
+    i2s_dma_started = false;
+    i2s_dma_holding = false;
+    i2s_dma_buffer_ready = false;
+    i2s_hold_sample = 0;
+    i2s_next_hold_sample = 0;
+    dma_hw->ints1 = 1u << i2s_config->dma_channel;
+    irq_set_exclusive_handler(DMA_IRQ_1, i2s_dma_irq1_handler);
+    irq_set_priority(DMA_IRQ_1, 0);
+    dma_channel_set_irq1_enabled(i2s_config->dma_channel, true);
+    irq_set_enabled(DMA_IRQ_1, true);
+#endif
+
     pio_sm_set_enabled(i2s_config->pio, i2s_config->sm , true);
 }
 
@@ -156,10 +205,18 @@ void i2s_write(const i2s_config_t *i2s_config,const int16_t *samples,const size_
  *     sample: pointer to an array of dma_trans_count x 32 bits samples
  */
 void __not_in_flash_func(i2s_dma_write)(i2s_config_t *i2s_config,const int16_t *samples) {
-    /* Wait the completion of the previous DMA transfer */
+#ifdef AUDIO_PWM_PIN
+    /* PWM naturally holds the last output value while DMA is idle. */
     dma_channel_wait_for_finish_blocking(i2s_config->dma_channel);
-    /* Copy samples into the DMA buffer */
+#else
+    /* Do not overwrite dma_buf while its normal block is still playing.
+     * The completion IRQ first switches DMA to the one-sample HOLD source. */
+    if (i2s_dma_started) {
+        while (!i2s_dma_holding) { }
+    }
+#endif
 
+    /* Copy samples into the DMA buffer */
 #ifdef AUDIO_PWM_PIN
     for(uint16_t i=0;i<i2s_config->dma_trans_count*2;i++) {
            
@@ -182,10 +239,22 @@ void __not_in_flash_func(i2s_dma_write)(i2s_config_t *i2s_config,const int16_t *
             i2s_config->dma_buf[i] = samples[i]>>i2s_config->volume;
         }
     }
+
+    /* Keep the current HOLD value unchanged until this block actually starts. */
+    i2s_next_hold_sample = ((uint32_t *)i2s_config->dma_buf)[i2s_config->dma_trans_count - 1];
+    __asm volatile ("dmb" ::: "memory");
+
+    if (i2s_dma_started) {
+        i2s_dma_buffer_ready = true;
+        return;
+    }
+    i2s_hold_sample = i2s_next_hold_sample;
+    i2s_dma_started = true;
 #endif    
 
 
-    /* Initiate the DMA transfer */
+    /* First I2S block starts directly. Later blocks are picked up by IRQ 1
+     * on the next one-sample HOLD boundary. PWM keeps the original path. */
     dma_channel_transfer_from_buffer_now(i2s_config->dma_channel,
                                          i2s_config->dma_buf,
                                          i2s_config->dma_trans_count);
