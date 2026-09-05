@@ -10,6 +10,7 @@
 #include "hardware/clocks.h"
 
 extern volatile uint8_t gamate_gray_lines;
+extern volatile uint8_t gamate_gray_level;
 extern volatile uint8_t gamate_hdmi_aspect_mode;
 extern volatile bool gamate_demo_title_visible;
 extern volatile uint16_t gamate_demo_title_width;
@@ -124,15 +125,17 @@ static bool gamate_hdmi_prepare_sram() {
 }
 
 static void gamate_hdmi_load_photo_palette() {
+    const int gray = (int)(gamate_gray_level & 3u) * 0x55;
     uint32_t gray_error = UINT32_MAX;
+    if (gray == 0) gamate_hdmi_gray = 255;
     for (int i = 0; i < GAMATE_HDMI_PALETTE_SIZE; i++) {
         const uint32_t rgb = gamate_hdmi_palette_rgb[i];
         graphics_set_palette(gamate_hdmi_palette_slot(i), rgb);
-        const int dr = (int)((rgb >> 16) & 0xff) - 0x55;
-        const int dg = (int)((rgb >> 8) & 0xff) - 0x55;
-        const int db = (int)(rgb & 0xff) - 0x55;
+        const int dr = (int)((rgb >> 16) & 0xff) - gray;
+        const int dg = (int)((rgb >> 8) & 0xff) - gray;
+        const int db = (int)(rgb & 0xff) - gray;
         const uint32_t error = (uint32_t)(dr * dr + dg * dg + db * db);
-        if (error < gray_error) {
+        if (gray != 0 && error < gray_error) {
             gray_error = error;
             gamate_hdmi_gray = gamate_hdmi_palette_slot(i);
         }
@@ -739,8 +742,10 @@ void __not_in_flash_func(adjust_clk)(void) {
 void graphics_set_mode(enum graphics_mode_t mode) {
     graphics_mode = mode;
     if (mode == GRAPHICSMODE_ASPECT) gamate_hdmi_load_photo_palette();
-    else if (mode == GRAPHICSMODE_3X3)
-        graphics_set_palette(GAMATE_HDMI_4X3_GRAY_INX, RGB888(0x55, 0x55, 0x55));
+    else if (mode == GRAPHICSMODE_3X3) {
+        const uint8_t gray = (uint8_t)((gamate_gray_level & 3u) * 0x55u);
+        graphics_set_palette(GAMATE_HDMI_4X3_GRAY_INX, RGB888(gray, gray, gray));
+    }
     else if (mode == TEXTMODE_DEFAULT || mode == TEXTMODE_53x30) gamate_hdmi_load_text_palette();
     clrScr(0);
 };

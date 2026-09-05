@@ -75,7 +75,8 @@ SETTINGS settings = {
     .rgb1 = 0xFFB266,
     .rgb2 = 0xCC0066,
     .rgb3 = 0x663300,
-    .instant_ignition = false
+    .instant_ignition = false,
+    .gray_level = 1
 };
 
 typedef struct input_bits_s {
@@ -332,6 +333,7 @@ bool filebrowser_loadfile(const char pathname[256]) {
 
 extern "C" {
 volatile uint8_t gamate_gray_lines = 0;
+volatile uint8_t gamate_gray_level = 1;
 volatile bool gamate_demo_title_visible = false;
 volatile uint16_t gamate_demo_title_width = 0;
 uint8_t gamate_demo_title_bitmap[8][316] = { 0 };
@@ -790,6 +792,7 @@ static void settings_defaults() {
     settings.aspect_ratio = 0;
 #endif
     settings.gray_lines = 0;
+    settings.gray_level = 1;
     settings.ghosting = 4;
     settings.palette = 0;
     settings.save_slot = 0;
@@ -804,6 +807,7 @@ static void settings_defaults() {
 static void settings_sanitize() {
     settings.swap_ab = settings.swap_ab ? true : false;
     settings.instant_ignition = settings.instant_ignition ? true : false;
+    if (settings.gray_level > 3) settings.gray_level = 1;
     if (settings.ghosting > 5) settings.ghosting = 4;
     if (settings.save_slot > 5) settings.save_slot = 0;
     if (settings.palette > count_of(palettes)) settings.palette = 0;
@@ -851,7 +855,8 @@ void load_config() {
             SETTINGS loaded = settings;
             UINT bytes_read = 0;
             if (FR_OK == f_read(&file, &loaded, sizeof(loaded), &bytes_read) &&
-                bytes_read == sizeof(loaded)) {
+                (bytes_read == sizeof(loaded) ||
+                 bytes_read == sizeof(loaded) - 1)) {
                 settings = loaded;
             }
             f_close(&file);
@@ -940,6 +945,9 @@ const MenuItem menu_items[] = {
         { "Gray lines: %s",            ARRAY, &gray_lines_menu,          nullptr, 4, {"N/A       ", "No        ", "Vertical  ", "Horizontal", "Both      "}},
 #elif HDMI
         { "Gray lines: %s",            ARRAY, &gray_lines_menu,          nullptr, 1, {"OFF", "ON "}},
+#endif
+#if VGA || HDMI
+        { "Gray level: %s",            ARRAY, &settings.gray_level,      nullptr, 3, {"0", "1", "2", "3"}},
 #endif
         { "Instant ignition simulation: %s",     ARRAY, &settings.instant_ignition,  nullptr, 1, {"NO ",       "YES"}},
         { "Demo game time: %s", ARRAY, &demo_duration, nullptr, 5, { "30 sec", "45 sec", "1 min ", "3 min ", "5 min ", "10 min" } },
@@ -1221,6 +1229,7 @@ void menu() {
     tv_out_mode.color_index = color_mode ? 1.0f : 0.0f;
 #endif
 #if VGA
+    gamate_gray_level = settings.gray_level;
     gamate_gray_lines = settings.aspect_ratio == 2
         ? settings.gray_lines
         : (settings.aspect_ratio == 0 && settings.gray_lines ? 1 : 0);
@@ -1235,6 +1244,7 @@ void menu() {
         graphics_set_mode(GRAPHICSMODE_DEFAULT);
     }
 #elif HDMI
+    gamate_gray_level = settings.gray_level;
     gamate_gray_lines = settings.gray_lines ? 1 : 0;
     graphics_set_offset(0, 0);
     graphics_set_mode(settings.aspect_ratio ? GRAPHICSMODE_ASPECT : GRAPHICSMODE_3X3);
@@ -1486,6 +1496,7 @@ int __time_critical_func(main)() {
         tv_out_mode.color_index = color_mode ? 1.0f : 0.0f;
 #endif
 #if VGA
+        gamate_gray_level = settings.gray_level;
         gamate_gray_lines = settings.aspect_ratio == 2
             ? settings.gray_lines
             : (settings.aspect_ratio == 0 && settings.gray_lines ? 1 : 0);
@@ -1500,6 +1511,7 @@ int __time_critical_func(main)() {
             graphics_set_mode(GRAPHICSMODE_DEFAULT);
         }
 #elif HDMI
+        gamate_gray_level = settings.gray_level;
         gamate_gray_lines = settings.gray_lines ? 1 : 0;
         graphics_set_offset(0, 0);
         graphics_set_mode(settings.aspect_ratio ? GRAPHICSMODE_ASPECT : GRAPHICSMODE_3X3);

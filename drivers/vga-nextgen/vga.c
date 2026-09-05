@@ -14,6 +14,7 @@
 #include "stdlib.h"
 
 extern volatile uint8_t gamate_gray_lines;
+extern volatile uint8_t gamate_gray_level;
 extern volatile bool gamate_demo_title_visible;
 extern volatile uint16_t gamate_demo_title_width;
 extern uint8_t gamate_demo_title_bitmap[8][316];
@@ -121,8 +122,6 @@ enum {
 static inline uint16_t gamate_dup_wire_pixel(const uint8_t p) {
     return (uint16_t)p | ((uint16_t)p << 8);
 }
-
-enum { GAMATE_GRAY_WIRE = 0xd5 };
 
 
 static inline __attribute__((always_inline)) void gamate_vga_draw_demo_title(
@@ -237,11 +236,14 @@ void __time_critical_func() dma_handler_VGA() {
 
             const bool gray_vertical = (gamate_gray_lines & 1) != 0;
             const bool gray_horizontal = (gamate_gray_lines & 2) != 0;
+            const uint8_t gray_wire =
+                (uint8_t)(0xc0u | ((gamate_gray_level & 3u) * 0x15u));
 
             if (gray_horizontal && ((logical_y - GAMATE_2X_SCREEN_Y) & 1)) {
                 /* Horizontal: replace only every second gameplay row.
                  * The backplane on both sides remains untouched. */
-                memset(pixels, GAMATE_GRAY_WIRE, GAMATE_2X_SCREEN_W);
+                for (int x = 0; x < GAMATE_2X_SCREEN_W; ++x)
+                    pixels[x] = gray_wire;
             } else {
                 const uint8_t* src =
                     graphics_buffer + screen_y * graphics_buffer_width;
@@ -255,7 +257,7 @@ void __time_critical_func() dma_handler_VGA() {
                         pixels[x * 2] = x & 1
                                       ? (uint8_t)(pair >> 8)
                                       : (uint8_t)pair;
-                        pixels[x * 2 + 1] = GAMATE_GRAY_WIRE;
+                        pixels[x * 2 + 1] = gray_wire;
                     }
                 } else {
                     /* No vertical replacement: keep the existing exact 2x
@@ -549,8 +551,10 @@ void __time_critical_func() dma_handler_VGA() {
         case GRAPHICSMODE_DEFAULT:
             input_buffer_8bit = input_buffer + y * width;
             if (gamate_gray_lines) {
+                const uint8_t gray_wire =
+                    (uint8_t)(0xc0u | ((gamate_gray_level & 3u) * 0x15u));
                 const uint16_t gray_pair =
-                    (uint16_t)GAMATE_GRAY_WIRE | ((uint16_t)GAMATE_GRAY_WIRE << 8);
+                    (uint16_t)gray_wire | ((uint16_t)gray_wire << 8);
                 for (int i = width; i--;) {
                     const uint8_t t = *input_buffer_8bit++;
                     *output_buffer_16bit++ = current_palette[t];
