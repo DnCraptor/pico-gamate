@@ -245,7 +245,17 @@ static void pio_set_x(PIO pio, const int sm, uint32_t v) {
 }
 
 
-static void __scratch_y("hdmi_driver") dma_handler_HDMI() {
+static inline __attribute__((always_inline)) void hdmi_irq_fill(
+        volatile uint8_t* dst, uint8_t value, int count) {
+    while (count-- > 0) *dst++ = value;
+}
+
+static inline __attribute__((always_inline)) void hdmi_irq_copy(
+        volatile uint8_t* dst, const uint8_t* src, int count) {
+    while (count-- > 0) *dst++ = *src++;
+}
+
+static void __not_in_flash_func(dma_handler_HDMI)() {
     static uint32_t inx_buf_dma;
     static uint line = 0;
     irq_inx++;
@@ -272,13 +282,13 @@ static void __scratch_y("hdmi_driver") dma_handler_HDMI() {
             case VGA_320x240x256: {
                 //заполняем пространство сверху и снизу графического буфера
                 if (y <= graphics_buffer_shift_y || y >= (graphics_buffer_shift_y + graphics_buffer_height)) {
-                    memset(output_buffer, 255,SCREEN_WIDTH);
+                    hdmi_irq_fill(output_buffer, 255, SCREEN_WIDTH);
                     break;
                 }
 
                 uint8_t* activ_buf_end = output_buffer + SCREEN_WIDTH;
                 //рисуем пространство слева от буфера
-                memset(output_buffer, 255, graphics_buffer_shift_x);
+                hdmi_irq_fill(output_buffer, 255, graphics_buffer_shift_x);
                 output_buffer += graphics_buffer_shift_x;
 
                 //рисуем сам видеобуфер+пространство справа
@@ -301,7 +311,7 @@ static void __scratch_y("hdmi_driver") dma_handler_HDMI() {
             }
             case GRAPHICSMODE_ASPECT: {
                 if (!gamate_hdmi_ready) {
-                    memset(output_buffer, 255, SCREEN_WIDTH);
+                    hdmi_irq_fill(output_buffer, 255, SCREEN_WIDTH);
                     break;
                 }
 
@@ -309,13 +319,13 @@ static void __scratch_y("hdmi_driver") dma_handler_HDMI() {
                     const int row = (y < GAMATE_HDMI_Y)
                         ? y
                         : GAMATE_HDMI_Y + y - (GAMATE_HDMI_Y + GAMATE_HDMI_H);
-                    memcpy(output_buffer, gamate_hdmi_outside_sram + row * SCREEN_WIDTH,
-                           SCREEN_WIDTH);
+                    hdmi_irq_copy(output_buffer, gamate_hdmi_outside_sram + row * SCREEN_WIDTH,
+                          SCREEN_WIDTH);
                     if (gamate_demo_title_visible && y >= 216 && y < 228) {
                         const int title_w = gamate_demo_title_width;
                         const int title_x = (SCREEN_WIDTH - title_w) / 2;
                         if (title_w > 0) {
-                            memset(output_buffer + title_x - 2, gamate_hdmi_demo_bg, title_w + 4);
+                            hdmi_irq_fill(output_buffer + title_x - 2, gamate_hdmi_demo_bg, title_w + 4);
                             if (y >= 218 && y < 226) {
                                 const uint8_t* bits = gamate_demo_title_bitmap[y - 218];
                                 for (int x = 0; x < title_w; ++x)
@@ -331,13 +341,13 @@ static void __scratch_y("hdmi_driver") dma_handler_HDMI() {
                 const int sides_stride = GAMATE_HDMI_X + right_width;
                 const uint8_t* sides = gamate_hdmi_sides_sram + bezel_row * sides_stride;
 
-                memcpy(output_buffer, sides, GAMATE_HDMI_X);
+                hdmi_irq_copy(output_buffer, sides, GAMATE_HDMI_X);
                 input_buffer = &graphics_buffer[
                     gamate_hdmi_scale_y[bezel_row] * graphics_buffer_width];
                 for (int x = 0; x < GAMATE_HDMI_W; x++)
                     output_buffer[GAMATE_HDMI_X + x] = input_buffer[gamate_hdmi_scale_x[x]];
-                memcpy(output_buffer + GAMATE_HDMI_X + GAMATE_HDMI_W,
-                       sides + GAMATE_HDMI_X, right_width);
+                hdmi_irq_copy(output_buffer + GAMATE_HDMI_X + GAMATE_HDMI_W,
+                      sides + GAMATE_HDMI_X, right_width);
                 break;
             }
             case TEXTMODE_DEFAULT:
@@ -371,9 +381,9 @@ static void __scratch_y("hdmi_driver") dma_handler_HDMI() {
 
         // --|_|---|_|---|_|----
         //---|___________|-----
-        memset(activ_buf + 48,BASE_HDMI_CTRL_INX, 24);
-        memset(activ_buf,BASE_HDMI_CTRL_INX + 1, 48);
-        memset(activ_buf + 392,BASE_HDMI_CTRL_INX, 8);
+        hdmi_irq_fill(activ_buf + 48, BASE_HDMI_CTRL_INX, 24);
+        hdmi_irq_fill(activ_buf, BASE_HDMI_CTRL_INX + 1, 48);
+        hdmi_irq_fill(activ_buf + 392, BASE_HDMI_CTRL_INX, 8);
 
         //без выравнивания
         // --|_|---|_|---|_|----
@@ -387,8 +397,8 @@ static void __scratch_y("hdmi_driver") dma_handler_HDMI() {
             //для выравнивания синхры
             // --|_|---|_|---|_|----
             //---|___________|-----
-            memset(activ_buf + 48,BASE_HDMI_CTRL_INX + 2, 352);
-            memset(activ_buf,BASE_HDMI_CTRL_INX + 3, 48);
+            hdmi_irq_fill(activ_buf + 48, BASE_HDMI_CTRL_INX + 2, 352);
+            hdmi_irq_fill(activ_buf, BASE_HDMI_CTRL_INX + 3, 48);
             //без выравнивания
             // --|_|---|_|---|_|----
             //-------|___________|----
@@ -400,8 +410,8 @@ static void __scratch_y("hdmi_driver") dma_handler_HDMI() {
             //ССИ без изображения
             //для выравнивания синхры
 
-            memset(activ_buf + 48,BASE_HDMI_CTRL_INX, 352);
-            memset(activ_buf,BASE_HDMI_CTRL_INX + 1, 48);
+            hdmi_irq_fill(activ_buf + 48, BASE_HDMI_CTRL_INX, 352);
+            hdmi_irq_fill(activ_buf, BASE_HDMI_CTRL_INX + 1, 48);
 
             // memset(activ_buf,BASE_HDMI_CTRL_INX,328);
             // memset(activ_buf+328,BASE_HDMI_CTRL_INX+1,48);
