@@ -17,8 +17,8 @@
 #include "stdlib.h"
 
 extern volatile bool gamate_demo_title_visible;
-extern volatile uint8_t gamate_demo_title_width;
-extern uint8_t gamate_demo_title_bitmap[8][156];
+extern volatile uint16_t gamate_demo_title_width;
+extern uint8_t gamate_demo_title_bitmap[8][316];
 
 #if defined(VGA_BASE_PIN)
 #undef TV_BASE_PIN
@@ -222,8 +222,33 @@ void tv_copy_u8(void* dst_void, const void* src_void, size_t count)
 static uint8_t* gamate_tv_outside_sram = NULL;
 static uint8_t* gamate_tv_sides_sram = NULL;
 static bool gamate_tv_ready = false;
-static uint8_t gamate_tv_demo_bg = GAMATE_TV_PALETTE_BASE;
-static uint8_t gamate_tv_demo_fg = GAMATE_TV_PALETTE_BASE;
+enum {
+    GAMATE_TV_DEMO_BG = 200,
+    GAMATE_TV_DEMO_FG = 215,
+    GAMATE_TV_DEMO_BAR_Y0 = 228,
+    GAMATE_TV_DEMO_TEXT_Y0 = 230,
+    GAMATE_TV_DEMO_TEXT_Y1 = 238,
+    GAMATE_TV_DEMO_BAR_Y1 = 240,
+};
+
+static inline __attribute__((always_inline)) uint8_t gamate_tv_demo_overlay(
+        uint8_t color, const int x, const int y) {
+    if (!gamate_demo_title_visible ||
+        y < GAMATE_TV_DEMO_BAR_Y0 || y >= GAMATE_TV_DEMO_BAR_Y1)
+        return color;
+
+    const int title_w = gamate_demo_title_width;
+    if (title_w <= 0)
+        return GAMATE_TV_DEMO_BG;
+
+    const int title_x = (320 - title_w) / 2;
+    if (y >= GAMATE_TV_DEMO_TEXT_Y0 && y < GAMATE_TV_DEMO_TEXT_Y1 &&
+        x >= title_x && x < title_x + title_w &&
+        gamate_demo_title_bitmap[y - GAMATE_TV_DEMO_TEXT_Y0][x - title_x])
+        return GAMATE_TV_DEMO_FG;
+
+    return GAMATE_TV_DEMO_BG;
+}
 
 static bool gamate_tv_prepare_sram(void) {
     if (gamate_tv_ready) return true;
@@ -245,23 +270,9 @@ static bool gamate_tv_prepare_sram(void) {
 }
 
 static void gamate_tv_load_photo_palette(void) {
-    uint32_t darkest_luma = UINT32_MAX;
-    uint32_t brightest_luma = 0;
     for (int i = 0; i < GAMATE_TV_PALETTE_SIZE; i++) {
         const uint8_t slot = (uint8_t)(GAMATE_TV_PALETTE_BASE + i);
-        const uint32_t rgb = gamate_tv_palette_rgb[i];
-        graphics_set_palette(slot, rgb);
-        const uint32_t luma = ((rgb >> 16) & 0xff) * 299u +
-                              ((rgb >> 8) & 0xff) * 587u +
-                              (rgb & 0xff) * 114u;
-        if (luma < darkest_luma) {
-            darkest_luma = luma;
-            gamate_tv_demo_bg = slot;
-        }
-        if (luma > brightest_luma) {
-            brightest_luma = luma;
-            gamate_tv_demo_fg = slot;
-        }
+        graphics_set_palette(slot, gamate_tv_palette_rgb[i]);
     }
 }
 
@@ -1171,7 +1182,7 @@ static bool __time_critical_func(video_timer_callbackTV)(repeating_timer_t* rt) 
                             const int source_y = (y * graphics_buffer.height) / 240;
                             const uint8_t* game_row = input_buffer + source_y * graphics_buffer.width;
                             int logical_x = 0;
-                            uint8_t color = game_row[0];
+                            uint8_t color = gamate_tv_demo_overlay(game_row[0], 0, y);
                             uint32_t cout32 = conv_color[li][color];
                             uint8_t* c_4 = (uint8_t*)&cout32;
 
@@ -1182,7 +1193,8 @@ static bool __time_critical_func(video_timer_callbackTV)(repeating_timer_t* rt) 
                                 next_ibuf -= di;
                                 if (next_ibuf <= 0) {
                                     if (logical_x < 319) logical_x++;
-                                    color = game_row[logical_x >> 1];
+                                    color = gamate_tv_demo_overlay(
+                                        game_row[logical_x >> 1], logical_x, y);
                                     cout32 = conv_color[li][color];
                                     c_4 = (uint8_t*)&cout32;
                                     next_ibuf += 0x100;
@@ -1214,6 +1226,7 @@ static bool __time_critical_func(video_timer_callbackTV)(repeating_timer_t* rt) 
                                 color = gamate_tv_sides_sram[side_row * (320 - GAMATE_TV_W)];
                             }
 
+                            color = gamate_tv_demo_overlay(color, 0, y);
                             uint32_t cout32 = conv_color[li][color];
                             uint8_t* c_4 = (uint8_t*)&cout32;
                             output_buffer8 += buffer_shift;
@@ -1241,17 +1254,7 @@ static bool __time_critical_func(video_timer_callbackTV)(repeating_timer_t* rt) 
                                         color = gamate_tv_sides_sram[side_row * (320 - GAMATE_TV_W) + side_x];
                                     }
 
-                                    if (gamate_demo_title_visible && y >= 216 && y < 228) {
-                                        const int title_w = gamate_demo_title_width;
-                                        const int title_x = (320 - title_w) / 2;
-                                        if (title_w > 0 && x >= title_x - 2 && x < title_x + title_w + 2) {
-                                            color = gamate_tv_demo_bg;
-                                            if (y >= 218 && y < 226 &&
-                                                x >= title_x && x < title_x + title_w &&
-                                                gamate_demo_title_bitmap[y - 218][x - title_x])
-                                                color = gamate_tv_demo_fg;
-                                        }
-                                    }
+                                    color = gamate_tv_demo_overlay(color, x, y);
                                     cout32 = conv_color[li][color];
                                     c_4 = (uint8_t*)&cout32;
                                     next_ibuf += 0x100;
