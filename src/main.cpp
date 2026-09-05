@@ -342,7 +342,7 @@ static uint64_t demo_title_until = 0;
 static char demo_current_name[79] = { 0 };
 static uint8_t demo_duration = 0;
 static uint8_t gray_lines_menu = 0;
-static const uint8_t demo_minutes[] = { 1, 3, 5, 10 };
+static const uint16_t demo_seconds[] = { 30, 45, 60, 180, 300, 600 };
 
 static void demo_prepare_title_bitmap(void) {
     gamate_demo_title_visible = false;
@@ -939,7 +939,7 @@ const MenuItem menu_items[] = {
         { "Gray lines: %s",            ARRAY, &gray_lines_menu,          nullptr, 1, {"OFF", "ON "}},
 #endif
         { "Instant ignition simulation: %s",     ARRAY, &settings.instant_ignition,  nullptr, 1, {"NO ",       "YES"}},
-        { "Demo game time: %s min", ARRAY, &demo_duration, nullptr, 3, { "1 ", "3 ", "5 ", "10" } },
+        { "Demo game time: %s", ARRAY, &demo_duration, nullptr, 5, { "30 sec", "45 sec", "1 min ", "3 min ", "5 min ", "10 min" } },
 #if SOFTTV
         { "" },
         { "TV system %s", ARRAY, &tv_out_mode.tv_system, nullptr, 1, { "PAL ", "NTSC" } },
@@ -1540,9 +1540,9 @@ int __time_critical_func(main)() {
             if (demo_active) {
                 gamate_demo_title_visible = gamate_demo_title_width != 0 &&
                                             time_us_64() < demo_title_until;
-                const uint8_t duration_index = demo_duration < count_of(demo_minutes)
+                const uint8_t duration_index = demo_duration < count_of(demo_seconds)
                                              ? demo_duration : 0;
-                const uint64_t duration_us = (uint64_t)demo_minutes[duration_index] * 60ull * 1000000ull;
+                const uint64_t duration_us = (uint64_t)demo_seconds[duration_index] * 1000000ull;
                 if (time_us_64() - demo_game_started_at >= duration_us) {
                     demo_advance_pending = true;
                     reboot = true;
