@@ -345,7 +345,7 @@ void __time_critical_func() dma_handler_VGA() {
 
     if (graphics_mode != TEXTMODE_DEFAULT && graphics_mode != TEXTMODE_53x30 &&
         graphics_mode != TEXTMODE_160x100 &&
-        gamate_demo_title_visible && screen_line >= 448 && screen_line < 472) {
+        gamate_demo_title_visible && screen_line >= 456 && screen_line < 480) {
         uint8_t* dst = (uint8_t *)(*output_buffer) + shift_picture;
         gamate_vga_draw_demo_title(dst, screen_line);
         dma_channel_set_read_addr(dma_chan_ctrl, output_buffer, false);
