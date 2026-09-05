@@ -22,6 +22,9 @@ pico_board_cmake_set(PICO_PLATFORM, rp2350)
 // --- RP2350 VARIANT ---
 #define PICO_RP2350A 0
 
+#define PSRAM_CS1_GPIO_RP2350A 8
+#define PSRAM_CS1_GPIO_RP2350B 47
+
 // --- UART ---
 #ifndef PICO_DEFAULT_UART
 #define PICO_DEFAULT_UART 0

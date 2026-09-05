@@ -18,6 +18,7 @@
 #include <graphics.h>
 #include "audio.h"
 #include "main.h"
+#include "psram.h"
 
 #include "nespad.h"
 #include "ff.h"
@@ -299,32 +300,49 @@ bool filebrowser_loadfile(const char pathname[256]) {
     draw_text("Loading...", window_x + 1, window_y + 2, 10, 1);
     sleep_ms(500);
 
-    multicore_lockout_start_blocking();
-    auto flash_target_offset = FLASH_TARGET_OFFSET;
-    if (FR_OK == f_open(&file, pathname, FA_READ)) {
-        static uint8_t buffer[FLASH_SECTOR_SIZE] __aligned(4);
-        do {
-            memset(buffer, 0xff, sizeof(buffer));
-            f_read(&file, buffer, sizeof(buffer), &bytes_read);
-            if (bytes_read) {
-                const uint8_t *flash_data =
-                    (const uint8_t *)(XIP_BASE + flash_target_offset);
-                if (memcmp(flash_data, buffer, sizeof(buffer)) != 0) {
-                    const uint32_t ints = save_and_disable_interrupts();
-                    flash_range_erase(flash_target_offset, FLASH_SECTOR_SIZE);
-                    flash_range_program(flash_target_offset, buffer, FLASH_SECTOR_SIZE);
-                    restore_interrupts(ints);
-                }
-                gpio_put(PICO_DEFAULT_LED_PIN, flash_target_offset >> 13 & 1);
-                flash_target_offset += FLASH_SECTOR_SIZE;
-            }
+    if (gamate_psram_available() && gamate_psram_size() != 0) {
+        if (fileinfo.fsize > gamate_psram_size()) {
+            draw_text("ERROR: ROM too large for PSRAM!", window_x + 1, window_y + 2, 13, 1);
+            sleep_ms(5000);
+            return false;
         }
-        while (bytes_read != 0);
-        gpio_put(PICO_DEFAULT_LED_PIN, true);
+
+        if (FR_OK == f_open(&file, pathname, FA_READ)) {
+            uint8_t *dst = (uint8_t *)GAMATE_PSRAM_BASE;
+            do {
+                f_read(&file, dst, 4096, &bytes_read);
+                dst += bytes_read;
+            }
+            while (bytes_read != 0);
+        }
+        f_close(&file);
+    } else {
+        multicore_lockout_start_blocking();
+        auto flash_target_offset = FLASH_TARGET_OFFSET;
+        if (FR_OK == f_open(&file, pathname, FA_READ)) {
+            static uint8_t buffer[FLASH_SECTOR_SIZE] __aligned(4);
+            do {
+                memset(buffer, 0xff, sizeof(buffer));
+                f_read(&file, buffer, sizeof(buffer), &bytes_read);
+                if (bytes_read) {
+                    const uint8_t *flash_data =
+                        (const uint8_t *)(XIP_BASE + flash_target_offset);
+                    if (memcmp(flash_data, buffer, sizeof(buffer)) != 0) {
+                        const uint32_t ints = save_and_disable_interrupts();
+                        flash_range_erase(flash_target_offset, FLASH_SECTOR_SIZE);
+                        flash_range_program(flash_target_offset, buffer, FLASH_SECTOR_SIZE);
+                        restore_interrupts(ints);
+                    }
+                    gpio_put(PICO_DEFAULT_LED_PIN, flash_target_offset >> 13 & 1);
+                    flash_target_offset += FLASH_SECTOR_SIZE;
+                }
+            }
+            while (bytes_read != 0);
+            gpio_put(PICO_DEFAULT_LED_PIN, true);
+        }
+        f_close(&file);
+        multicore_lockout_end_blocking();
     }
-    f_close(&file);
-    multicore_lockout_end_blocking();
-    // restore_interrupts(ints);
     gpio_put(PICO_DEFAULT_LED_PIN, false);
     strcpy(filename, fileinfo.fname);
     return true;
@@ -458,7 +476,12 @@ void filebrowser(const char pathname[256], const char executables[11]) {
         draw_text("A/F10", off, 29, 7, 0);
         off += 5;
         draw_text(" USB DRV ", off, 29, 0, 3);
+        off += 9;
 #endif
+        if (gamate_psram_available() && gamate_psram_size() != 0)
+            draw_text("PSRAM", off, 29, 7, 0);
+        else
+            draw_text("FLASH", off, 29, 7, 0);
 
         if (FR_OK != f_opendir(&dir, basepath)) {
             draw_text("Failed to open directory", 1, 1, 4, 0);
@@ -680,6 +703,9 @@ bool __not_in_flash_func(overclock)() {
 #endif
     bool res = set_sys_clock_khz(frequencies[frequency_index] * KHZ, 0);
     if (res) {
+#if PICO_RP2350
+        gamate_psram_reclock();
+#endif
         adjust_clk();
     }
     return res;
@@ -1445,6 +1471,10 @@ byte Loop6502(M6502 *R) {
 
 int __time_critical_func(main)() {
     overclock();
+#if PICO_RP2350
+    if (gamate_psram_init() && gamate_psram_size() != 0)
+        ROM = (uint8_t *)GAMATE_PSRAM_BASE;
+#endif
 
     sem_init(&vga_start_semaphore, 0, 1);
     multicore_launch_core1(render_core);

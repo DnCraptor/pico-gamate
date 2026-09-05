@@ -6,6 +6,11 @@
 #include "boards/pico.h"
 #endif
 
+#if PICO_RP2350
+#define PSRAM_CS1_GPIO_RP2350A 19
+#define PSRAM_CS1_GPIO_RP2350B 47
+#endif
+
 // SDCARD
 #define SDCARD_PIN_SPI0_CS 5
 #define SDCARD_PIN_SPI0_SCK 2
