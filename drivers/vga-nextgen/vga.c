@@ -127,7 +127,7 @@ enum { GAMATE_GRAY_WIRE = 0xd5 };
 
 static inline __attribute__((always_inline)) void gamate_vga_draw_demo_title(
         uint8_t* dst, const int screen_y) {
-    enum { TITLE_BAR_Y0 = 448, TITLE_TEXT_Y0 = 452, TITLE_TEXT_Y1 = 468, TITLE_BAR_Y1 = 472 };
+    enum { TITLE_BAR_Y0 = 456, TITLE_TEXT_Y0 = 460, TITLE_TEXT_Y1 = 476, TITLE_BAR_Y1 = 480 };
     if (!gamate_demo_title_visible || screen_y < TITLE_BAR_Y0 || screen_y >= TITLE_BAR_Y1) return;
 
     /* Full-width overlay. Use explicit stores in the DMA IRQ; do not call
@@ -252,7 +252,7 @@ void __time_critical_func() dma_handler_VGA() {
                      * only on the useful rows left by Horizontal. */
                     for (int x = 0; x < GAMATE_PHOTO_SCREEN_W_PIXELS; ++x) {
                         const uint16_t pair = current_palette[src[x]];
-                        pixels[x * 2] = (GAMATE_2X_SCREEN_X + x * 2) & 1
+                        pixels[x * 2] = x & 1
                                       ? (uint8_t)(pair >> 8)
                                       : (uint8_t)pair;
                         pixels[x * 2 + 1] = GAMATE_GRAY_WIRE;
