@@ -221,8 +221,6 @@ void tv_copy_u8(void* dst_void, const void* src_void, size_t count)
 /* The time-critical line generator must not fetch the photo through XIP. */
 static uint8_t* gamate_tv_outside_sram = NULL;
 static uint8_t* gamate_tv_sides_sram = NULL;
-static uint8_t gamate_tv_scale_x[GAMATE_TV_W];
-static uint8_t gamate_tv_scale_y[GAMATE_TV_H];
 static bool gamate_tv_ready = false;
 static uint8_t gamate_tv_demo_bg = GAMATE_TV_PALETTE_BASE;
 static uint8_t gamate_tv_demo_fg = GAMATE_TV_PALETTE_BASE;
@@ -242,11 +240,6 @@ static bool gamate_tv_prepare_sram(void) {
 
     memcpy(gamate_tv_outside_sram, gamate_tv_outside, GAMATE_TV_OUTSIDE_SIZE);
     memcpy(gamate_tv_sides_sram, gamate_tv_sides, GAMATE_TV_SIDES_SIZE);
-    for (int x = 0; x < GAMATE_TV_W; x++)
-        gamate_tv_scale_x[x] = (uint8_t)((x * 160) / GAMATE_TV_W);
-    for (int y = 0; y < GAMATE_TV_H; y++)
-        gamate_tv_scale_y[y] = (uint8_t)((y * 150) / GAMATE_TV_H);
-
     gamate_tv_ready = true;
     return true;
 }
@@ -1170,41 +1163,29 @@ static bool __time_critical_func(video_timer_callbackTV)(repeating_timer_t* rt) 
                         }
                         break;
                         case GRAPHICSMODE_DEFAULT: {
-                            if (y < graphics_buffer.shift_y || y >= graphics_buffer.height+graphics_buffer.shift_y) {
-                                for (int i = 0; i < video_mode.img_W - d_end; i++) {
-                                    uint32_t cout32 = conv_color[li][200];
-                                    uint8_t* c_4 = (uint8_t*)&cout32;
-                                    *output_buffer8++ = c_4[i % 4];
-                                }
-                            } else {
-                                //для 8-битного буфера
-                                uint8_t* input_buffer8 = input_buffer + (y-graphics_buffer.shift_y) * graphics_buffer.width;
+                            /* Gamate 4:3: expand the native 160x150 framebuffer
+                             * to the full logical 320x240 TV raster. Horizontal
+                             * scaling is exact 2x; vertical scaling is 150->240.
+                             * The analogue encoder below still performs its own
+                             * logical-320 to wire-sample resampling via di. */
+                            const int source_y = (y * graphics_buffer.height) / 240;
+                            const uint8_t* game_row = input_buffer + source_y * graphics_buffer.width;
+                            int logical_x = 0;
+                            uint8_t color = game_row[0];
+                            uint32_t cout32 = conv_color[li][color];
+                            uint8_t* c_4 = (uint8_t*)&cout32;
 
-                                // todo bgcolor
-                                uint8_t color = graphics_buffer.shift_x ? 200 : (*input_buffer8++);
-                                uint32_t cout32 = conv_color[li][color];
-                                // uint8_t* c_4=&conv_color[0][c8&0xf];
-                                uint8_t* c_4 = (uint8_t*)&cout32;
-                                output_buffer8 += buffer_shift;
+                            output_buffer8 += buffer_shift;
 
-
-                                int x = 0;
-
-                                for (int i = 0; i < video_mode.img_W - d_end; i++) {
-                                    *output_buffer8++ = c_4[i % 4];
-                                    next_ibuf -= di;
-                                    if (next_ibuf <= 0) {
-                                        x++;
-                                        if (x > graphics_buffer.shift_x && x < graphics_buffer.shift_x + graphics_buffer.
-                                                width) {
-                                            color = *input_buffer8++;
-                                        }
-                                        else {
-                                            color = 200;
-                                        }
-                                        cout32 = conv_color[li][color];
-                                        next_ibuf += 0x100;
-                                    }
+                            for (int i = 0; i < video_mode.img_W - d_end; i++) {
+                                *output_buffer8++ = c_4[i & 3];
+                                next_ibuf -= di;
+                                if (next_ibuf <= 0) {
+                                    if (logical_x < 319) logical_x++;
+                                    color = game_row[logical_x >> 1];
+                                    cout32 = conv_color[li][color];
+                                    c_4 = (uint8_t*)&cout32;
+                                    next_ibuf += 0x100;
                                 }
                             }
                         }
@@ -1220,7 +1201,7 @@ static bool __time_critical_func(video_timer_callbackTV)(repeating_timer_t* rt) 
 
                             const uint8_t* game_row = NULL;
                             if (y >= GAMATE_TV_Y && y < GAMATE_TV_Y + GAMATE_TV_H)
-                                game_row = input_buffer + gamate_tv_scale_y[y - GAMATE_TV_Y] * graphics_buffer.width;
+                                game_row = input_buffer + (y - GAMATE_TV_Y) * graphics_buffer.width;
 
                             uint8_t color;
                             if (y < GAMATE_TV_Y || y >= GAMATE_TV_Y + GAMATE_TV_H) {
@@ -1253,7 +1234,7 @@ static bool __time_critical_func(video_timer_callbackTV)(repeating_timer_t* rt) 
                                         const int side_row = y - GAMATE_TV_Y;
                                         color = gamate_tv_sides_sram[side_row * (320 - GAMATE_TV_W) + x];
                                     } else if (x < GAMATE_TV_X + GAMATE_TV_W) {
-                                        color = game_row[gamate_tv_scale_x[x - GAMATE_TV_X]];
+                                        color = game_row[x - GAMATE_TV_X];
                                     } else {
                                         const int side_row = y - GAMATE_TV_Y;
                                         const int side_x = GAMATE_TV_X + x - (GAMATE_TV_X + GAMATE_TV_W);

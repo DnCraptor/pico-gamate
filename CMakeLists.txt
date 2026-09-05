@@ -49,7 +49,7 @@ set(PROG_VERSION "3.0.7")
 #set(TV ON)
 set(SOFTTV ON)
 
-set(I2S ON)
+#set(I2S ON)
 #set(HWAY ON)
 
 set(CMAKE_C_STANDARD 11)

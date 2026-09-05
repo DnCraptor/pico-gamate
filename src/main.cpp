@@ -976,7 +976,7 @@ const MenuItem menu_items[] = {
 #elif HDMI
         { "Aspect ratio: %s",          ARRAY, &settings.aspect_ratio,  nullptr, 1, {"4:3", "1:2"}},
 #elif SOFTTV
-        { "Aspect ratio: %s",          ARRAY, &settings.aspect_ratio,  nullptr, 1, {"1:1", "4:3"}},
+        { "Aspect ratio: %s",          ARRAY, &settings.aspect_ratio,  nullptr, 1, {"4:3", "1:1"}},
 #endif
 #if VGA
         { "Gray lines: %s",            ARRAY, &gray_lines_menu,          nullptr, 4, {"N/A       ", "No        ", "Vertical  ", "Horizontal", "Both      "}},
