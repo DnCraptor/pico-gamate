@@ -76,15 +76,11 @@ static uint16_t txt_palette[16];
 static uint8_t* gamate_photo_ram = NULL;
 static uint8_t* gamate_photo_outside_ram = NULL;
 static uint8_t* gamate_photo_sides_ram = NULL;
-static uint8_t* gamate_photo_scale_x_ram = NULL;
-static uint8_t* gamate_photo_scale_y_ram = NULL;
 static bool gamate_photo_ram_ready = false;
 
 enum {
     GAMATE_PHOTO_RAM_BYTES = sizeof(gamate_photo_outside) +
-                             sizeof(gamate_photo_sides) +
-                             GAMATE_PHOTO_SCREEN_W_PIXELS +
-                             GAMATE_PHOTO_SCREEN_H,
+                             sizeof(gamate_photo_sides),
 };
 
 static void gamate_photo_prepare_ram(void) {
@@ -101,18 +97,6 @@ static void gamate_photo_prepare_ram(void) {
 
     gamate_photo_sides_ram = p;
     memcpy(p, gamate_photo_sides, sizeof(gamate_photo_sides));
-    p += sizeof(gamate_photo_sides);
-
-    gamate_photo_scale_x_ram = p;
-    for (int x = 0; x < GAMATE_PHOTO_SCREEN_W_PIXELS; ++x) {
-        gamate_photo_scale_x_ram[x] = (uint8_t)((x * 160) / GAMATE_PHOTO_SCREEN_W_PIXELS);
-    }
-    p += GAMATE_PHOTO_SCREEN_W_PIXELS;
-
-    gamate_photo_scale_y_ram = p;
-    for (int y = 0; y < GAMATE_PHOTO_SCREEN_H; ++y) {
-        gamate_photo_scale_y_ram[y] = (uint8_t)((y * 150) / GAMATE_PHOTO_SCREEN_H);
-    }
 
     gamate_photo_ram_ready = true;
 }
@@ -182,56 +166,56 @@ void __time_critical_func() dma_handler_VGA() {
             return;
         }
 
-        if (logical_y < GAMATE_PHOTO_SCREEN_Y ||
-            logical_y >= GAMATE_PHOTO_SCREEN_Y + GAMATE_PHOTO_SCREEN_H) {
-            // Full physical VGA row, already quantized/dithered to RGB222.
-            const int photo_y = logical_y < GAMATE_PHOTO_SCREEN_Y
-                              ? logical_y
-                              : logical_y - GAMATE_PHOTO_SCREEN_H;
-            const uint32_t* photo32 = (const uint32_t *)(gamate_photo_outside_ram +
-                                                        photo_y * GAMATE_PHOTO_WIDTH_BYTES);
-            for (int i = 0; i < GAMATE_PHOTO_WIDTH_BYTES / 4; ++i) {
-                dst32[i] = photo32[i];
-            }
-        } else {
-            const int screen_y = logical_y - GAMATE_PHOTO_SCREEN_Y;
-            const uint8_t* bezel = gamate_photo_sides_ram + screen_y * GAMATE_PHOTO_SIDE_BYTES;
+        /* The 1x backplane is a compact centered console crop on black.
+         * Build the black field procedurally, then overlay only the SRAM-backed
+         * photo pixels. */
+        for (int i = 0; i < GAMATE_PHOTO_WIDTH_BYTES / 4; ++i)
+            dst32[i] = 0xc0c0c0c0u;
 
-            // Left bezel span is padded to a 32-bit boundary.  The three padded
-            // bytes overlap the LCD and are immediately replaced below.
-            const uint32_t* left32 = (const uint32_t *)bezel;
-            for (int i = 0; i < GAMATE_PHOTO_LEFT_PAD_BYTES / 4; ++i) {
-                dst32[i] = left32[i];
-            }
+        if (logical_y >= GAMATE_PHOTO_CROP_Y &&
+            logical_y < GAMATE_PHOTO_CROP_Y + GAMATE_PHOTO_CROP_H) {
+            if (logical_y < GAMATE_PHOTO_SCREEN_Y ||
+                logical_y >= GAMATE_PHOTO_SCREEN_Y + GAMATE_PHOTO_SCREEN_H) {
+                const int photo_y = logical_y < GAMATE_PHOTO_SCREEN_Y
+                    ? logical_y - GAMATE_PHOTO_CROP_Y
+                    : GAMATE_PHOTO_TOP_ROWS +
+                      logical_y - (GAMATE_PHOTO_SCREEN_Y + GAMATE_PHOTO_SCREEN_H);
+                memcpy(dst + GAMATE_PHOTO_CROP_X_BYTES,
+                       gamate_photo_outside_ram + photo_y * GAMATE_PHOTO_CROP_W_BYTES,
+                       GAMATE_PHOTO_CROP_W_BYTES);
+            } else {
+                const int screen_y = logical_y - GAMATE_PHOTO_SCREEN_Y;
+                const uint8_t* bezel = gamate_photo_sides_ram +
+                                       screen_y * GAMATE_PHOTO_SIDE_BYTES;
 
-            const int src_y = gamate_photo_scale_y_ram[screen_y];
-            const uint8_t* src = graphics_buffer + src_y * graphics_buffer_width;
-            uint8_t* pixels = dst + GAMATE_PHOTO_SCREEN_X_BYTES;
-            uint16_t* current_palette = palette[((src_y & is_flash_line) +
-                                                  (frame_number & is_flash_frame)) & 1];
-            for (int x = 0; x < GAMATE_PHOTO_SCREEN_W_PIXELS; ++x) {
-                const uint16_t pair = current_palette[src[gamate_photo_scale_x_ram[x]]];
-                pixels[x] = (GAMATE_PHOTO_SCREEN_X_BYTES + x) & 1
-                          ? (uint8_t)(pair >> 8)
-                          : (uint8_t)pair;
-            }
+                memcpy(dst + GAMATE_PHOTO_CROP_X_BYTES, bezel,
+                       GAMATE_PHOTO_LEFT_BYTES);
 
-            uint32_t* right_dst = (uint32_t *)(dst + GAMATE_PHOTO_SCREEN_X_BYTES +
-                                               GAMATE_PHOTO_SCREEN_W_PIXELS);
-            const uint32_t* right32 = (const uint32_t *)(bezel + GAMATE_PHOTO_LEFT_PAD_BYTES);
-            for (int i = 0; i < GAMATE_PHOTO_RIGHT_BYTES / 4; ++i) {
-                right_dst[i] = right32[i];
+                const uint8_t* src = graphics_buffer +
+                                     screen_y * graphics_buffer_width;
+                uint8_t* pixels = dst + GAMATE_PHOTO_SCREEN_X_BYTES;
+                uint16_t* current_palette = palette[((screen_y & is_flash_line) +
+                                                      (frame_number & is_flash_frame)) & 1];
+                for (int x = 0; x < GAMATE_PHOTO_SCREEN_W_PIXELS; ++x) {
+                    const uint16_t pair = current_palette[src[x]];
+                    pixels[x] = (GAMATE_PHOTO_SCREEN_X_BYTES + x) & 1
+                              ? (uint8_t)(pair >> 8)
+                              : (uint8_t)pair;
+                }
+
+                memcpy(dst + GAMATE_PHOTO_SCREEN_X_BYTES + GAMATE_PHOTO_SCREEN_W_PIXELS,
+                       bezel + GAMATE_PHOTO_LEFT_BYTES, GAMATE_PHOTO_RIGHT_BYTES);
             }
         }
 
-        /* Demo title belongs to the bezel, never to the 160x150 framebuffer. */
-        if (gamate_demo_title_visible && logical_y >= 428 && logical_y < 440) {
+        /* Demo title belongs to the lower bezel, never to the 160x150 framebuffer. */
+        if (gamate_demo_title_visible && logical_y >= 324 && logical_y < 338) {
             const int title_w = gamate_demo_title_width;
             const int title_x = (GAMATE_PHOTO_WIDTH_BYTES - title_w) / 2;
             if (title_w > 0) {
                 memset(dst + title_x - 2, 0xc0, title_w + 4);
-                if (logical_y >= 430 && logical_y < 438) {
-                    const uint8_t* bits = gamate_demo_title_bitmap[logical_y - 430];
+                if (logical_y >= 327 && logical_y < 335) {
+                    const uint8_t* bits = gamate_demo_title_bitmap[logical_y - 327];
                     for (int x = 0; x < title_w; ++x)
                         if (bits[x]) dst[title_x + x] = 0xff;
                 }
