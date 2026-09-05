@@ -1046,11 +1046,17 @@ static inline void update_palette() {
     }
 }
 
+static inline void stop_ay_sound() {
+#ifdef HWAY
+    SendAY(0);
+    SendAY(AY_Enable);
+#else
+    PSG_reset(&psg);
+#endif
+}
+
 void menu() {
-    #ifdef HWAY
-        SendAY(0);
-        SendAY(AY_Enable);
-    #endif
+    stop_ay_sound();
     bool exit = false;
     graphics_set_mode(TEXTMODE_DEFAULT);
     char footer[TEXTMODE_COLS];
@@ -1498,12 +1504,9 @@ int __time_critical_func(main)() {
     while (true) {
         if (need_browser) {
             graphics_set_mode(TEXTMODE_DEFAULT);
-#ifdef HWAY
-            /* Match menu() semantics: reset the external AY before
-             * entering the ROM browser, including demo termination. */
-            SendAY(0);
-            SendAY(AY_Enable);
-#endif
+            /* Silence AY before entering the ROM browser, including
+             * demo termination. Works for both HWAY and emulated AY. */
+            stop_ay_sound();
             demo_requested = false;
             filebrowser(HOME_DIR, "bin");
 
@@ -1613,10 +1616,7 @@ int __time_critical_func(main)() {
 
         if (demo_active && demo_advance_pending) {
             demo_advance_pending = false;
-#ifdef HWAY
-            SendAY(0);
-            SendAY(AY_Enable);
-#endif
+            stop_ay_sound();
             if (demo_load_next_rom(demo_current_name)) {
                 reboot = false;
                 continue;
