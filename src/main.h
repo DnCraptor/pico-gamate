@@ -19,6 +19,7 @@ typedef struct __attribute__((__packed__)) {
     bool instant_ignition;
     uint8_t gray_level;
     uint8_t tv_system;
+    uint8_t demo_duration;
 } SETTINGS;
 
 extern SETTINGS settings;

@@ -64,7 +64,7 @@ uint32_t rgb2;
 uint32_t rgb3;
 
 SETTINGS settings = {
-    .version = 1,
+    .version = 2,
     .swap_ab = false,
     .aspect_ratio = false,
     .gray_lines = 0,
@@ -78,7 +78,8 @@ SETTINGS settings = {
     .rgb3 = 0x663300,
     .instant_ignition = false,
     .gray_level = 1,
-    .tv_system = 0
+    .tv_system = 0,
+    .demo_duration = 0
 };
 
 typedef struct input_bits_s {
@@ -364,9 +365,8 @@ static bool demo_advance_pending = false;
 static uint64_t demo_game_started_at = 0;
 static uint64_t demo_title_until = 0;
 static char demo_current_name[79] = { 0 };
-static uint8_t demo_duration = 0;
 static uint8_t gray_lines_menu = 0;
-static const uint16_t demo_seconds[] = { 30, 45, 60, 180, 300, 600 };
+static const uint16_t demo_seconds[] = { 15, 30, 45, 60, 120, 180, 300, 600 };
 
 static void demo_prepare_title_bitmap(void) {
     gamate_demo_title_visible = false;
@@ -815,7 +815,7 @@ static const char* config_video_name() {
 }
 
 static void settings_defaults() {
-    settings.version = 1;
+    settings.version = 2;
     settings.swap_ab = false;
 #if HDMI
     settings.aspect_ratio = 1; // 1:2
@@ -834,6 +834,7 @@ static void settings_defaults() {
     settings.rgb2 = 0xCC0066;
     settings.rgb3 = 0x663300;
     settings.instant_ignition = false;
+    settings.demo_duration = 0;
 }
 
 static void settings_sanitize() {
@@ -844,6 +845,7 @@ static void settings_sanitize() {
     if (settings.ghosting > 5) settings.ghosting = 4;
     if (settings.save_slot > 5) settings.save_slot = 0;
     if (settings.palette > count_of(palettes)) settings.palette = 0;
+    if (settings.demo_duration >= count_of(demo_seconds)) settings.demo_duration = 0;
 #if VGA
     if (settings.aspect_ratio > 2) settings.aspect_ratio = 2;
     if (settings.gray_lines > 3) settings.gray_lines = 0;
@@ -885,12 +887,11 @@ void load_config() {
     if (FR_OK == f_mount(&fs, "", 1)) {
         config_mkdirs();
         if (FR_OK == f_open(&file, pathname, FA_READ)) {
-            SETTINGS loaded = settings;
+            SETTINGS loaded;
             UINT bytes_read = 0;
             if (FR_OK == f_read(&file, &loaded, sizeof(loaded), &bytes_read) &&
-                (bytes_read == sizeof(loaded) ||
-                 bytes_read == sizeof(loaded) - 1 ||
-                 bytes_read == sizeof(loaded) - 2)) {
+                bytes_read == sizeof(loaded) &&
+                loaded.version == 2) {
                 settings = loaded;
             }
             f_close(&file);
@@ -986,7 +987,7 @@ const MenuItem menu_items[] = {
 #if VGA || HDMI
         { "Gray level: %s",            ARRAY, &settings.gray_level,      nullptr, 3, {"0", "1", "2", "3"}},
 #endif
-        { "Demo game time: %s", ARRAY, &demo_duration, nullptr, 5, { "30 sec", "45 sec", "1 min ", "3 min ", "5 min ", "10 min" } },
+        { "Demo game time: %s", ARRAY, &settings.demo_duration, nullptr, 7, { "15 sec", "30 sec", "45 sec", "1 min ", "2 min ", "3 min ", "5 min ", "10 min" } },
 #if SOFTTV
         { "" },
         { "TV system %s", ARRAY, &settings.tv_system, nullptr, 1, { "PAL ", "NTSC" } },
@@ -1610,8 +1611,8 @@ int __time_critical_func(main)() {
             if (demo_active) {
                 gamate_demo_title_visible = gamate_demo_title_width != 0 &&
                                             time_us_64() < demo_title_until;
-                const uint8_t duration_index = demo_duration < count_of(demo_seconds)
-                                             ? demo_duration : 0;
+                const uint8_t duration_index = settings.demo_duration < count_of(demo_seconds)
+                                             ? settings.demo_duration : 0;
                 const uint64_t duration_us = (uint64_t)demo_seconds[duration_index] * 1000000ull;
                 if (time_us_64() - demo_game_started_at >= duration_us) {
                     demo_advance_pending = true;

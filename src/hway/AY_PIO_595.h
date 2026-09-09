@@ -6,8 +6,8 @@ extern "C" {
 #include "hardware/pio.h"
 
 #define pioAY595 pio0
-#define CLK_LATCH_595_BASE_PIN (26)
-#define DATA_595_PIN (28)
+#define CLK_LATCH_595_BASE_PIN (AUDIO_DATA_PIN)
+#define DATA_595_PIN (AUDIO_CLOCK_PIN + 1)
 #define CLK_AY_PIN (21)
 
 #define BEEPER_ON (1<<12)
