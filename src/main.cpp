@@ -64,7 +64,7 @@ uint32_t rgb2;
 uint32_t rgb3;
 
 SETTINGS settings = {
-    .version = 2,
+    .version = 3,
     .swap_ab = false,
     .aspect_ratio = false,
     .gray_lines = 0,
@@ -79,7 +79,8 @@ SETTINGS settings = {
     .instant_ignition = false,
     .gray_level = 1,
     .tv_system = 0,
-    .demo_duration = 0
+    .demo_duration = 0,
+    .color_mode = true
 };
 
 typedef struct input_bits_s {
@@ -158,6 +159,8 @@ static bool isInReport(hid_keyboard_report_t const* report, const unsigned char 
 static volatile bool altPressed = false;
 static volatile bool ctrlPressed = false;
 static volatile uint8_t fxPressedV = 0;
+static volatile bool pageUpPressed = false;
+static volatile bool pageDownPressed = false;
 
 void
 __not_in_flash_func(process_kbd_report)(hid_keyboard_report_t const* report, hid_keyboard_report_t const* prev_report) {
@@ -202,6 +205,10 @@ __not_in_flash_func(process_kbd_report)(hid_keyboard_report_t const* report, hid
 
     altPressed = isInReport(report, HID_KEY_ALT_LEFT) || isInReport(report, HID_KEY_ALT_RIGHT);
     ctrlPressed = isInReport(report, HID_KEY_CONTROL_LEFT) || isInReport(report, HID_KEY_CONTROL_RIGHT);
+    if (isInReport(report, HID_KEY_PAGE_UP) && !isInReport(prev_report, HID_KEY_PAGE_UP))
+        pageUpPressed = true;
+    if (isInReport(report, HID_KEY_PAGE_DOWN) && !isInReport(prev_report, HID_KEY_PAGE_DOWN))
+        pageDownPressed = true;
     
     if (altPressed && ctrlPressed && isInReport(report, HID_KEY_DELETE)) {
         watchdog_enable(10, true);
@@ -281,52 +288,70 @@ bool isExecutable(const char pathname[255],const char *extensions) {
     return false;
 }
 
+static bool demo_active = false;
+
 bool filebrowser_loadfile(const char pathname[256]) {
     UINT bytes_read = 0;
     FIL file;
 
     constexpr int window_y = (TEXTMODE_ROWS - 5) / 2;
     constexpr int window_x = (TEXTMODE_COLS - 43) / 2;
+    const auto show_load_error = [&](const char *message) {
+        draw_text(message, window_x + 1, window_y + 2, 13, 1);
+        sleep_ms(demo_active ? 1500 : 5000);
+    };
 
     draw_window("Loading ROM", window_x, window_y, 43, 5);
 
     FILINFO fileinfo;
-    f_stat(pathname, &fileinfo);
-    rom_size = fileinfo.fsize;
+    if (FR_OK != f_stat(pathname, &fileinfo) || fileinfo.fsize == 0) {
+        show_load_error("ERROR: ROM not found or empty!");
+        return false;
+    }
+    const uint32_t load_size = fileinfo.fsize;
     if (16384 - 64 << 10 < fileinfo.fsize) {
-        draw_text("ERROR: ROM too large! Canceled!!", window_x + 1, window_y + 2, 13, 1);
-        sleep_ms(5000);
+        show_load_error("ERROR: ROM too large! Canceled!!");
         return false;
     }
 
     draw_text("Loading...", window_x + 1, window_y + 2, 10, 1);
     sleep_ms(500);
 
+    uint32_t total_read = 0;
+    bool load_ok = false;
+
     if (gamate_psram_available() && gamate_psram_size() != 0) {
         if (fileinfo.fsize > gamate_psram_size()) {
-            draw_text("ERROR: ROM too large for PSRAM!", window_x + 1, window_y + 2, 13, 1);
-            sleep_ms(5000);
+            show_load_error("ERROR: ROM too large for PSRAM!");
             return false;
         }
 
         if (FR_OK == f_open(&file, pathname, FA_READ)) {
             uint8_t *dst = (uint8_t *)GAMATE_PSRAM_BASE;
+            FRESULT read_result;
             do {
-                f_read(&file, dst, 4096, &bytes_read);
+                read_result = f_read(&file, dst, 4096, &bytes_read);
                 dst += bytes_read;
+                total_read += bytes_read;
             }
-            while (bytes_read != 0);
+            while (read_result == FR_OK && bytes_read != 0);
+            load_ok = read_result == FR_OK && total_read == load_size;
+            f_close(&file);
         }
-        f_close(&file);
     } else {
-        multicore_lockout_start_blocking();
-        auto flash_target_offset = FLASH_TARGET_OFFSET;
         if (FR_OK == f_open(&file, pathname, FA_READ)) {
+            multicore_lockout_start_blocking();
+            auto flash_target_offset = FLASH_TARGET_OFFSET;
             static uint8_t buffer[FLASH_SECTOR_SIZE] __aligned(4);
+            FRESULT read_result;
+            bool flash_verify_failed = false;
+
             do {
                 memset(buffer, 0xff, sizeof(buffer));
-                f_read(&file, buffer, sizeof(buffer), &bytes_read);
-                if (bytes_read) {
+                read_result = f_read(&file, buffer, sizeof(buffer), &bytes_read);
+                total_read += bytes_read;
+
+                if (read_result == FR_OK && bytes_read) {
                     const uint8_t *flash_data =
                         (const uint8_t *)(XIP_BASE + flash_target_offset);
                     if (memcmp(flash_data, buffer, sizeof(buffer)) != 0) {
@@ -334,18 +359,39 @@ bool filebrowser_loadfile(const char pathname[256]) {
                         flash_range_erase(flash_target_offset, FLASH_SECTOR_SIZE);
                         flash_range_program(flash_target_offset, buffer, FLASH_SECTOR_SIZE);
                         restore_interrupts(ints);
+
+                        if (memcmp(flash_data, buffer, sizeof(buffer)) != 0) {
+                            flash_verify_failed = true;
+                            break;
+                        }
                     }
                     gpio_put(PICO_DEFAULT_LED_PIN, flash_target_offset >> 13 & 1);
                     flash_target_offset += FLASH_SECTOR_SIZE;
                 }
             }
-            while (bytes_read != 0);
+            while (read_result == FR_OK && bytes_read != 0);
+
             gpio_put(PICO_DEFAULT_LED_PIN, true);
+            multicore_lockout_end_blocking();
+            load_ok = !flash_verify_failed && read_result == FR_OK && total_read == load_size;
+            f_close(&file);
+
+            if (flash_verify_failed) {
+                gpio_put(PICO_DEFAULT_LED_PIN, false);
+                show_load_error("ERROR: Flash verify failed!");
+                return false;
+            }
         }
-        f_close(&file);
-        multicore_lockout_end_blocking();
     }
+
     gpio_put(PICO_DEFAULT_LED_PIN, false);
+
+    if (!load_ok) {
+        show_load_error("ERROR: ROM load failed!");
+        return false;
+    }
+
+    rom_size = load_size;
     strcpy(filename, fileinfo.fname);
     return true;
 }
@@ -360,7 +406,6 @@ uint8_t gamate_demo_title_bitmap[8][316] = { 0 };
 }
 
 static bool demo_requested = false;
-static bool demo_active = false;
 static bool demo_advance_pending = false;
 static uint64_t demo_game_started_at = 0;
 static uint64_t demo_title_until = 0;
@@ -397,41 +442,52 @@ static bool demo_load_next_rom(const char *after_name) {
     if (FR_OK != f_mount(&fs, "SD", 1))
         return false;
 
-    DIR dir;
-    FILINFO info;
-    if (FR_OK != f_opendir(&dir, HOME_DIR))
-        return false;
-
-    char best[79] = { 0 };
-    while (f_readdir(&dir, &info) == FR_OK && info.fname[0] != '\0') {
-        if (info.fattrib & AM_DIR)
-            continue;
-        if (!isExecutable(info.fname, "bin"))
-            continue;
-        if (after_name && after_name[0] && strcmp(info.fname, after_name) <= 0)
-            continue;
-        if (!best[0] || strcmp(info.fname, best) < 0) {
-            strncpy(best, info.fname, sizeof(best) - 1);
-            best[sizeof(best) - 1] = '\0';
-        }
+    char after[79] = { 0 };
+    if (after_name && after_name[0]) {
+        strncpy(after, after_name, sizeof(after) - 1);
+        after[sizeof(after) - 1] = '\0';
     }
-    f_closedir(&dir);
 
-    if (!best[0])
-        return false;
+    while (true) {
+        DIR dir;
+        FILINFO info;
+        if (FR_OK != f_opendir(&dir, HOME_DIR))
+            return false;
 
-    char pathname[256];
-    snprintf(pathname, sizeof(pathname), "%s\\%s", HOME_DIR, best);
-    if (!filebrowser_loadfile(pathname))
-        return false;
+        char best[79] = { 0 };
+        while (f_readdir(&dir, &info) == FR_OK && info.fname[0] != '\0') {
+            if (info.fattrib & AM_DIR)
+                continue;
+            if (!isExecutable(info.fname, "bin"))
+                continue;
+            if (after[0] && strcmp(info.fname, after) <= 0)
+                continue;
+            if (!best[0] || strcmp(info.fname, best) < 0) {
+                strncpy(best, info.fname, sizeof(best) - 1);
+                best[sizeof(best) - 1] = '\0';
+            }
+        }
+        f_closedir(&dir);
 
-    strncpy(demo_current_name, best, sizeof(demo_current_name) - 1);
-    demo_current_name[sizeof(demo_current_name) - 1] = '\0';
-    demo_prepare_title_bitmap();
-    demo_game_started_at = time_us_64();
-    demo_title_until = demo_game_started_at + 10000000ull;
-    gamate_demo_title_visible = gamate_demo_title_width != 0;
-    return true;
+        if (!best[0])
+            return false;
+
+        char pathname[256];
+        snprintf(pathname, sizeof(pathname), "%s\\%s", HOME_DIR, best);
+        if (!filebrowser_loadfile(pathname)) {
+            strncpy(after, best, sizeof(after) - 1);
+            after[sizeof(after) - 1] = '\0';
+            continue;
+        }
+
+        strncpy(demo_current_name, best, sizeof(demo_current_name) - 1);
+        demo_current_name[sizeof(demo_current_name) - 1] = '\0';
+        demo_prepare_title_bitmap();
+        demo_game_started_at = time_us_64();
+        demo_title_until = demo_game_started_at + 10000000ull;
+        gamate_demo_title_visible = gamate_demo_title_width != 0;
+        return true;
+    }
 }
 
 void filebrowser(const char pathname[256], const char executables[11]) {
@@ -574,6 +630,36 @@ void filebrowser(const char pathname[256], const char executables[11]) {
                 }
             }
 
+            constexpr int half_page = per_page / 2;
+            if (pageDownPressed) {
+                pageDownPressed = false;
+                int selected = offset + current_item;
+                selected += half_page;
+                if (selected >= total_files) selected = total_files - 1;
+
+                if (selected < offset + per_page) {
+                    current_item = selected - offset;
+                }
+                else {
+                    current_item = per_page - 1;
+                    offset = selected - current_item;
+                }
+            }
+            if (pageUpPressed) {
+                pageUpPressed = false;
+                int selected = offset + current_item;
+                selected -= half_page;
+                if (selected < 0) selected = 0;
+
+                if (selected >= offset) {
+                    current_item = selected - offset;
+                }
+                else {
+                    current_item = 0;
+                    offset = selected;
+                }
+            }
+
             if (debounce && gamepad1_bits.start) {
                 auto file_at_cursor = fileItems[offset + current_item];
 
@@ -595,8 +681,9 @@ void filebrowser(const char pathname[256], const char executables[11]) {
                 if (file_at_cursor.is_executable) {
                     sprintf(tmp, "%s\\%s", basepath, file_at_cursor.filename);
 
-                    filebrowser_loadfile(tmp);
-                    return;
+                    if (filebrowser_loadfile(tmp))
+                        return;
+                    debounce = false;
                 }
             }
 
@@ -815,7 +902,7 @@ static const char* config_video_name() {
 }
 
 static void settings_defaults() {
-    settings.version = 2;
+    settings.version = 3;
     settings.swap_ab = false;
 #if HDMI
     settings.aspect_ratio = 1; // 1:2
@@ -835,11 +922,13 @@ static void settings_defaults() {
     settings.rgb3 = 0x663300;
     settings.instant_ignition = false;
     settings.demo_duration = 0;
+    settings.color_mode = true;
 }
 
 static void settings_sanitize() {
     settings.swap_ab = settings.swap_ab ? true : false;
     settings.instant_ignition = settings.instant_ignition ? true : false;
+    settings.color_mode = settings.color_mode ? true : false;
     if (settings.gray_level > 3) settings.gray_level = 1;
     if (settings.tv_system > 1) settings.tv_system = 0;
     if (settings.ghosting > 5) settings.ghosting = 4;
@@ -891,7 +980,7 @@ void load_config() {
             UINT bytes_read = 0;
             if (FR_OK == f_read(&file, &loaded, sizeof(loaded), &bytes_read) &&
                 bytes_read == sizeof(loaded) &&
-                loaded.version == 2) {
+                loaded.version == 3) {
                 settings = loaded;
             }
             f_close(&file);
@@ -908,25 +997,28 @@ void load_config() {
     rgb3 = settings.rgb3;
 }
 
+static bool config_write(const char* pathname) {
+    FIL file;
+    if (FR_OK != f_open(&file, pathname, FA_CREATE_ALWAYS | FA_WRITE))
+        return false;
+
+    UINT bytes_written = 0;
+    const FRESULT fr = f_write(&file, &settings, sizeof(settings), &bytes_written);
+    const FRESULT close_fr = f_close(&file);
+    return FR_OK == fr && bytes_written == sizeof(settings) && FR_OK == close_fr;
+}
+
 void save_config() {
     settings_sanitize();
 
-    FIL file;
     char pathname[256];
     config_path(pathname, sizeof(pathname));
 
     if (FR_OK == f_mount(&fs, "", 1)) {
         config_mkdirs();
-        if (FR_OK == f_open(&file, pathname, FA_CREATE_ALWAYS | FA_WRITE)) {
-            UINT bytes_writen;
-            f_write(&file, &settings, sizeof(settings), &bytes_writen);
-            f_close(&file);
-        }
+        config_write(pathname);
     }
 }
-#if SOFTTV
-bool color_mode = true;
-#endif
 const MenuItem menu_items[] = {
         {"Swap AB <> BA: %s",     ARRAY, &settings.swap_ab,  nullptr, 1, {"NO ",       "YES"}},
         {},
@@ -991,7 +1083,7 @@ const MenuItem menu_items[] = {
 #if SOFTTV
         { "" },
         { "TV system %s", ARRAY, &settings.tv_system, nullptr, 1, { "PAL ", "NTSC" } },
-        { "Colors: %s", ARRAY, &color_mode, nullptr, 1, { "NO ", "YES" } },
+        { "Colors: %s", ARRAY, &settings.color_mode, nullptr, 1, { "NO ", "YES" } },
 #endif
     //{ "Player 1: %s",        ARRAY, &player_1_input, 2, { "Keyboard ", "Gamepad 1", "Gamepad 2" }},
     //{ "Player 2: %s",        ARRAY, &player_2_input, 2, { "Keyboard ", "Gamepad 1", "Gamepad 2" }},
@@ -1269,7 +1361,7 @@ void menu() {
     }
 
 #if SOFTTV
-    tv_out_mode.color_index = color_mode ? 1.0f : 0.0f;
+    tv_out_mode.color_index = settings.color_mode ? 1.0f : 0.0f;
 #endif
 #if VGA
     gamate_gray_level = settings.gray_level;
@@ -1524,7 +1616,11 @@ int __time_critical_func(main)() {
             /* Silence AY before entering the ROM browser, including
              * demo termination. Works for both HWAY and emulated AY. */
             stop_ay_sound();
+            /* The file browser is always a manual/non-demo state. */
+            demo_active = false;
             demo_requested = false;
+            demo_advance_pending = false;
+            gamate_demo_title_visible = false;
             filebrowser(HOME_DIR, "bin");
 
             if (demo_requested) {
@@ -1543,7 +1639,7 @@ int __time_critical_func(main)() {
         graphics_set_buffer((uint8_t *)SCREEN, 160, 150);
 
 #if SOFTTV
-        tv_out_mode.color_index = color_mode ? 1.0f : 0.0f;
+        tv_out_mode.color_index = settings.color_mode ? 1.0f : 0.0f;
 #endif
 #if VGA
         gamate_gray_level = settings.gray_level;
@@ -1649,6 +1745,12 @@ int __time_critical_func(main)() {
         }
 
         reboot = false;
+        /* Normal Demo ROM-to-ROM transitions continue above. Any path
+         * reaching the browser must leave no Demo state behind. */
+        demo_active = false;
+        demo_requested = false;
+        demo_advance_pending = false;
+        gamate_demo_title_visible = false;
         need_browser = true;
     }
     __unreachable();

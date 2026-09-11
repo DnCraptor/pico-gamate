@@ -71,8 +71,22 @@ static void __not_in_flash_func(i2s_dma_irq1_handler)(void) {
  * return the default i2s context used to store information about the setup
  */
 i2s_config_t i2s_get_default_config(void) {
+#if defined(AUDIO_PWM)
     i2s_config_t i2s_config = {
-		.sample_freq = 44100, 
+		.sample_freq = 44100,
+		.channel_count = 2,
+		.data_pin = AUDIO_PWM_PIN,
+		.clock_pin_base = AUDIO_PWM_PIN + 1,
+		.pio = pio1,
+		.sm = 0,
+        .dma_channel = 0,
+        .dma_buf = NULL,
+        .dma_trans_count = 0,
+        .volume = 0,
+	};
+#else
+    i2s_config_t i2s_config = {
+		.sample_freq = 44100,
 		.channel_count = 2,
 		.data_pin = AUDIO_DATA_PIN,
 		.clock_pin_base = AUDIO_CLOCK_PIN,
@@ -83,7 +97,7 @@ i2s_config_t i2s_get_default_config(void) {
         .dma_trans_count = 0,
         .volume = 0,
 	};
-
+#endif
     return i2s_config;
 }
 

@@ -7,7 +7,7 @@ and compatible boards.**
 RP2350-class hardware and provides several video and audio backends
 intended for MURMULATOR-style retro-computer hardware.
 
-Current version: **3.0.7**
+Current version: **3.0.8**
 
 ## Current target
 
@@ -73,7 +73,7 @@ Two display modes are available:
 -   **1:1** --- the original 160×150 framebuffer is displayed without
     geometric scaling inside the Gamate backplane.
 
-The selected PAL/NTSC standard is stored in the emulator settings.
+The selected PAL/NTSC standard and the TV-SOFT `Colors` option are stored in the emulator settings.
 
 ## Audio
 
@@ -88,6 +88,16 @@ The I2S implementation includes underrun handling intended to keep the
 audio stream stable even under the relatively high interrupt load of
 TV-SOFT.
 
+On MURMULATOR 2, PWM stereo uses GP10/GP11. This avoids GP8, which is the
+RP2350A QSPI PSRAM CS1 pin. The PWM backend now derives its output pins
+from `AUDIO_PWM_PIN`, while I2S continues to use the board-specific
+`AUDIO_DATA_PIN` / `AUDIO_CLOCK_PIN` pair.
+
+Hardware AY-3-8910 / TurboSound output now derives the 74xx595 data and
+clock/latch wiring from the board audio-pin definitions instead of fixed
+MURMULATOR 1 GPIO numbers, so the same code follows the MURMULATOR 2
+pinout correctly.
+
 ## Cartridge storage
 
 Cartridges are selected from the SD-card browser.
@@ -97,18 +107,24 @@ placed in PSRAM. The firmware detects and initializes the external PSRAM
 where the board configuration provides it.
 
 Flash programming avoids erase/program operations for sectors whose
-contents are already unchanged, reducing unnecessary flash writes.
+contents are already unchanged, reducing unnecessary flash writes. Changed
+sectors are verified after programming. A missing, empty, incomplete, too
+large, or unsuccessfully verified cartridge is reported as a load failure
+instead of being accepted as the current ROM.
 
 ## Demo mode
 
 Demo mode automatically loads cartridges in sequence and advances to the
-next game after a configurable interval.
+next game after a configurable interval. The selected duration is stored
+in the emulator settings.
 
 Available game durations:
 
+-   15 seconds
 -   30 seconds
 -   45 seconds
 -   1 minute
+-   2 minutes
 -   3 minutes
 -   5 minutes
 -   10 minutes
@@ -116,7 +132,30 @@ Available game durations:
 While a cartridge is started in Demo mode, its name is displayed in a
 strip along the bottom of the screen.
 
+If a cartridge cannot be loaded, Demo mode briefly shows the error, skips
+that cartridge, and continues with the next one. Entering the cartridge
+browser clears the active Demo state so a non-Demo return to the browser
+cannot leave Demo mode latched.
+
 Demo mode can be started from the emulator menu.
+
+## Cartridge browser navigation
+
+Keyboard `PageUp` and `PageDown` move the current selection by half of the
+visible page. The cursor moves first; the list viewport scrolls only when
+the new selection would otherwise fall outside the visible area.
+
+## Configuration format
+
+The current settings format is version 3. Demo duration and the TV-SOFT
+`Colors` option are persistent. Configuration loading is strict: only the
+current structure size and version are accepted. Configuration writes are
+considered successful only when the complete settings block is written and
+the file closes successfully.
+
+Version-1 and version-2 configuration files are therefore not interpreted
+as current version-3 settings; current defaults are used until settings are
+saved again.
 
 ## Building
 
@@ -137,6 +176,10 @@ HWAY
 
 Only one video backend and one audio configuration should be selected
 for a release build.
+
+The checked-in default CMake selection for 3.0.8 is MURMULATOR 2 with HDMI
+enabled; `build_all.bat` still produces the full 48-configuration release
+matrix described below.
 
 Example configuration:
 
@@ -185,10 +228,10 @@ bin/Release/
 Examples:
 
 ``` text
-m1p2-gamate-VGA-PWM-3.0.7.uf2
-m2p2-gamate-HDMI-I2S-3.0.7.uf2
-PCp2-gamate-VGA-AY-3-8910-3.0.7.uf2
-z0p2-gamate-TV-SOFT-I2S-3.0.7.uf2
+m1p2-gamate-VGA-PWM-3.0.8.uf2
+m2p2-gamate-HDMI-I2S-3.0.8.uf2
+PCp2-gamate-VGA-AY-3-8910-3.0.8.uf2
+z0p2-gamate-TV-SOFT-I2S-3.0.8.uf2
 ```
 
 ### Video suffix

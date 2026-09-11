@@ -1,184 +1,183 @@
-# pico-gamate 3.0.7 --- Release Notes
+# pico-gamate 3.0.8 --- Release Notes
 
-This release substantially extends the display, demo, audio, and RP2350
-support of pico-gamate.
+Version 3.0.8 is a maintenance release focused on MURMULATOR 2 audio and
+PSRAM correctness, persistent Demo/TV-SOFT settings, safer cartridge
+loading, Demo-mode recovery, and cartridge-browser navigation.
 
 ## Highlights
 
--   Added a photographic Gamate backplane for the native-scale display
-    modes.
--   Added and refined backplane support for VGA, HDMI, and TV-SOFT.
--   Added proper VGA 1:1 output and HDMI 1:2 output.
--   Added 4:3 rendering for HDMI and TV-SOFT.
--   Reworked PAL/NTSC TV-SOFT timing and rendering.
--   Added Demo mode, including automatic cartridge cycling and a
-    cartridge-name overlay.
--   Added configurable Demo game duration: 30 sec, 45 sec, 1 min, 3 min,
-    5 min, or 10 min.
--   Added hardware AY-3-8910 / TurboSound output support.
--   Added configurable gray-line level for the VGA/HDMI modes that
-    support gray lines.
--   Added QSPI PSRAM support for RP2350/Pico 2 targets. Cartridge ROMs
-    can be loaded into PSRAM when available.
--   Improved cartridge flashing: unchanged flash sectors are no longer
-    erased/programmed again.
--   Fixed several hardware/emulated AY state and muting issues during
-    Demo mode and ROM changes.
--   Fixed VGA line positioning and Demo overlay placement.
--   Fixed HDMI rendering/flow issues.
--   Fixed TV-SOFT 1:1 backplane geometry and 4:3 full-screen rendering.
--   TV-SOFT now saves the selected PAL/NTSC mode.
--   Fixed TV-SOFT Demo cartridge-name overlay positioning, dimensions,
-    and colors.
--   Fixed I2S underruns under heavy TV-SOFT load: the DMA path holds the
-    last stereo sample while waiting for fresh audio, and the audio DMA
-    IRQ has priority over the time-critical software-video path.
--   Removed the unused `Instant ignition simulation` menu item.
--   Added a script for building the supported RP2350/Cortex-M33
-    configuration matrix.
+-   Fixed MURMULATOR 2 PWM routing: stereo PWM now uses GP10/GP11 and no
+    longer conflicts with the RP2350A QSPI PSRAM CS1 pin on GP8.
+-   Fixed hardware AY-3-8910 / TurboSound 74xx595 pin mapping so it follows
+    each board's audio-pin definitions instead of fixed MURMULATOR 1 GPIOs.
+-   Added persistent Demo duration and expanded the available Demo times to
+    15 sec, 30 sec, 45 sec, 1 min, 2 min, 3 min, 5 min, and 10 min.
+-   Added persistence for the TV-SOFT `Colors` option.
+-   Updated the settings format to version 3 with strict size/version
+    validation and checked configuration writes.
+-   Added cartridge-load validation and Flash post-program verification.
+-   Demo mode now skips cartridges that fail to load instead of stopping on
+    the first failed entry.
+-   Fixed stale/sticky Demo state when control returns to the cartridge
+    browser through a non-Demo path.
+-   Added keyboard `PageUp` / `PageDown` navigation by half a visible page.
+-   Updated the default CMake selection to MURMULATOR 2 with HDMI enabled.
 
-## Display modes
+## MURMULATOR 2 PWM / PSRAM fix
 
-### VGA
+The MURMULATOR 2 board definition now sets `AUDIO_PWM_PIN` to GP10.
+Because the PWM backend uses an even/odd stereo pair, this gives GP10/GP11.
 
-VGA now supports the revised Gamate presentation modes, including a true
-1:1 framebuffer presentation with the photographic console backplane.
-Backplane geometry and LCD masking were refined so that the emulated
-160×150 image is cleanly isolated from the photographed LCD contents.
+Previously the base pin was GP9, which made the PWM pair GP8/GP9. On
+RP2350A-based MURMULATOR 2 boards GP8 is QSPI PSRAM CS1, so enabling PWM
+could reconfigure the PSRAM chip-select pin and break cartridge access.
 
-Gray-line rendering and its positioning were also corrected, with a
-selectable gray level where applicable.
+The audio default configuration now explicitly uses `AUDIO_PWM_PIN` and
+`AUDIO_PWM_PIN + 1` for PWM builds, while I2S keeps using
+`AUDIO_DATA_PIN` / `AUDIO_CLOCK_PIN`.
 
-### HDMI
+## Hardware AY pin mapping
 
-HDMI received the Gamate backplane, corrected rendering flow, a 1:2
-presentation based on the approved 1:1 composition, and a 4:3
-full-screen mode.
+The hardware AY-3-8910 / TurboSound 74xx595 interface no longer hard-codes
+GPIO 26/28 for its clock/latch and data signals. It derives those signals
+from the board audio-pin definitions instead.
 
-The Demo cartridge-name overlay was repositioned and resized for the
-HDMI output.
+This preserves the existing MURMULATOR 1 mapping while allowing
+MURMULATOR 2 to use its own audio-pin layout correctly.
 
-### TV-SOFT
+## Persistent settings format v3
 
-The software composite-video output received extensive PAL/NTSC fixes.
+The settings structure is updated to version 3.
 
-The two user-visible modes are now:
+The following settings added since 3.0.7 are persistent:
 
--   **4:3** --- the 160×150 Gamate framebuffer fills the logical 320×240
-    picture: exact 2× expansion horizontally and 150→240 scaling
-    vertically.
--   **1:1** --- the original 160×150 framebuffer is displayed without
-    geometric scaling inside the Gamate backplane.
+-   Demo game duration
+-   TV-SOFT `Colors` mode
 
-PAL and NTSC use the same logical backplane composition; their
-differences remain in the composite timing/signal generation.
+Configuration loading accepts only the exact current structure size and
+version 3. Older shortened structures are no longer accepted as the
+current configuration.
 
-The selected TV system is now stored in settings.
+Configuration saving now checks both the number of bytes written and the
+result of `f_close()`. A configuration write is successful only when the
+full settings block is written and the file closes successfully.
 
-## Demo mode
+Because of the structure/version change, existing version-1/version-2
+configuration files are not loaded as current settings. Current defaults
+are used until settings are saved again.
 
-Demo mode can be started from the menu and can also be controlled with
-the NES-pad Demo shortcut.
+## Expanded Demo durations
 
-The emulator automatically advances through cartridges after the
-selected interval. Available durations are:
+Demo mode now offers:
 
+-   15 seconds
 -   30 seconds
 -   45 seconds
 -   1 minute
+-   2 minutes
 -   3 minutes
 -   5 minutes
 -   10 minutes
 
-The current cartridge name is shown in an overlay at the bottom of the
-display. Overlay dimensions, positioning, bitmap stride, and colors were
-corrected across the affected video paths.
+The selected value is stored in the version-3 configuration.
 
-Audio state is now reset correctly while changing cartridges or leaving
-Demo mode, including hardware AY-3-8910 output.
+## Cartridge-load validation
 
-## Audio
+A cartridge is no longer treated as successfully loaded merely because a
+load attempt was started. The loader now checks the relevant file-system
+results and the total number of bytes read.
 
-Hardware AY-3-8910 / TurboSound output is supported in addition to the
-existing PWM and I2S paths.
+Load failures are reported for cases including:
 
-The I2S DMA path was hardened for the particularly high CPU load of
-TV-SOFT. If the producer misses a DMA boundary, I2S continues
-transmitting the last stereo sample instead of starving the PIO stream.
-The I2S DMA interrupt is given priority over the software-TV rendering
-interrupt, eliminating the intermittent clicks observed under TV-SOFT
-load.
+-   missing or empty cartridge files;
+-   cartridges that exceed the supported size;
+-   cartridges too large for available PSRAM;
+-   incomplete/read-error loads;
+-   Flash verification failures.
 
-## RP2350 QSPI PSRAM
+`rom_size` and the active cartridge filename are updated only after a
+successful load, so a failed manual selection does not silently turn into
+the previously loaded cartridge.
 
-RP2350/Pico 2 builds now support external QSPI PSRAM where provided by
-the board.
+## Flash verification
 
-The implementation probes the PSRAM, configures QMI timing, and can
-place cartridge ROM data in PSRAM instead of repeatedly relying on flash
-storage. Board-specific PSRAM chip-select definitions are provided for
-the supported RP2350 targets.
+Flash-backed cartridge loading still compares each sector first and skips
+sectors whose contents already match the requested data.
 
-## Flash handling
+After a changed sector is erased and programmed, the programmed XIP data
+is compared with the source buffer. A mismatch aborts the load and shows:
 
-Cartridge programming now compares existing flash contents before
-erase/program operations. Sectors that already contain the requested
-data are left untouched, reducing unnecessary flash erase/program
-cycles.
+```text
+ERROR: Flash verify failed!
+```
 
-## File names legend
+## Demo-mode load recovery
 
-Current release packages target **RP2350 / ARM Cortex-M33 only**.
+During Demo mode, a cartridge that fails to load is skipped and the next
+alphabetical cartridge is tried. Demo-mode load errors use a shorter delay
+so automatic cycling can continue; manual load errors remain visible
+longer.
 
-**Board prefix:**
+## Demo state reset on browser entry
 
--   `m1` --- Murmulator 1.x.
--   `m2` --- Murmulator 2.0.
--   `PC` --- Olimex RP2040-PICO-PC board family.
--   `z0` --- RP2350-PiZero.
--   `p2` --- Raspberry Pi Pico 2 / RP2350 generation.
+The cartridge browser is now always entered as a non-Demo state. Before a
+real browser entry, the firmware clears:
 
-For example:
+```text
+demo_active
+demo_requested
+demo_advance_pending
+```
 
--   `m1p2-gamate-VGA-PWM-3.0.7.uf2` --- Murmulator 1.x, VGA output, PWM
-    sound.
--   `m2p2-gamate-HDMI-I2S-3.0.7.uf2` --- Murmulator 2.0, HDMI output,
-    I2S sound.
--   `PCp2-gamate-VGA-AY-3-8910-3.0.7.uf2` --- Olimex RP2040-PICO-PC
-    board, RP2350/Pico 2 build, VGA output, hardware AY-3-8910.
--   `z0p2-gamate-TV-SOFT-I2S-3.0.7.uf2` --- RP2350-PiZero, composite AV
-    output generated by TV-SOFT, I2S sound.
+and hides the Demo title overlay.
 
-> **N.B.** Murmulator Ultimate v2.x uses the Murmulator 1.x pinout, so
-> its firmware uses the `m1` prefix.
+The same cleanup is performed on the generic path returning from emulation
+to the browser. Normal timed Demo cartridge-to-cartridge transitions
+continue directly above that path, so automatic Demo cycling is preserved.
 
-**Video suffix:**
+## Cartridge-browser PageUp / PageDown
 
--   `-VGA` --- VGA output.
--   `-HDMI` --- HDMI output.
--   `-TV-SOFT` --- software-generated composite TV/AV output.
+Keyboard `PageUp` and `PageDown` now move the selected cartridge by half
+of the visible page.
 
-**Audio suffix:**
+The cursor moves first. The viewport is kept in place while the target
+remains visible, and scrolls only when the new selection would move beyond
+the current visible range.
 
--   `-PWM` --- PWM audio; use this when no external I2S DAC is
-    installed/enabled.
--   `-I2S` --- I2S audio for the standard supported TDA/PCM-style I2S
-    DAC path.
--   `-I2S-CS4334` --- I2S audio configured for CS4334.
--   `-AY-3-8910` --- hardware AY-3-8910 / TurboSound output.
+## TV-SOFT Colors persistence
 
-**File extension:**
+The TV-SOFT `Colors` menu option now uses the persistent settings
+structure instead of a separate runtime-only variable, so the selected
+color/monochrome state survives restart together with the other emulator
+settings.
 
--   `.uf2` --- firmware image for direct installation on the RP2350/Pico
-    2 target.
+## Build defaults and release matrix
 
-## Build scope
+The checked-in default CMake configuration now selects MURMULATOR 2 and
+HDMI, and the project version is 3.0.8.
 
-The release build matrix covers the supported RP2350/Cortex-M33 targets
-with:
+The release build matrix remains the same as 3.0.7:
 
+-   RP2350 / ARM Cortex-M33 targets;
+-   MURMULATOR 1.x;
+-   MURMULATOR 2.0;
+-   Olimex RP2040-PICO-PC board family with RP2350/Pico 2;
+-   RP2350-PiZero;
 -   VGA, HDMI, or TV-SOFT video;
 -   PWM, I2S, I2S-CS4334, or hardware AY-3-8910 audio.
 
-RP2040 (`p1`), RISC-V, `m1p2launcher`, TFT/ILI9341, legacy `TV`, and
-`.m1p2` launcher packages are not part of this release matrix.
+This gives 48 standard release configurations.
+
+## Firmware file names
+
+Examples for this release:
+
+```text
+m1p2-gamate-VGA-PWM-3.0.8.uf2
+m2p2-gamate-HDMI-I2S-3.0.8.uf2
+PCp2-gamate-VGA-AY-3-8910-3.0.8.uf2
+z0p2-gamate-TV-SOFT-I2S-3.0.8.uf2
+```
+
+MURMULATOR Ultimate v2.x continues to use the MURMULATOR 1.x pinout and
+therefore uses the `m1` firmware prefix.

@@ -20,6 +20,7 @@ typedef struct __attribute__((__packed__)) {
     uint8_t gray_level;
     uint8_t tv_system;
     uint8_t demo_duration;
+    bool color_mode;
 } SETTINGS;
 
 extern SETTINGS settings;
