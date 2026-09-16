@@ -1141,9 +1141,12 @@ static bool __time_critical_func(video_timer_callbackTV)(repeating_timer_t* rt) 
                             const uint8_t* cell = text_buffer + text_row * (TEXTMODE_COLS * 2);
                             uint8_t glyph_row = tv_font_6x8_sram[cell[0] * 8 + glyph_y];
                             uint8_t colorIndex = cell[1];
-                            uint8_t palette_index = tv_textmode_palette_sram[(glyph_row & 1)
-                                                                         ? (colorIndex & 0xf)
-                                                                         : (colorIndex >> 4)];
+                            const bool preview_cell = cell[0] == 0 && colorIndex >= 0xF0 && colorIndex <= 0xF3;
+                            uint8_t palette_index = preview_cell
+                                                      ? (uint8_t)(31 + ((colorIndex & 3) << 5))
+                                                      : tv_textmode_palette_sram[(glyph_row & 1)
+                                                                             ? (colorIndex & 0xf)
+                                                                             : (colorIndex >> 4)];
                             uint32_t cout32 = conv_color[li][palette_index];
                             uint8_t* c_4 = (uint8_t*)&cout32;
 
@@ -1164,9 +1167,12 @@ static bool __time_critical_func(video_timer_callbackTV)(repeating_timer_t* rt) 
                                         colorIndex = cell[1];
                                     }
 
-                                    palette_index = tv_textmode_palette_sram[((glyph_row >> glyph_x) & 1)
-                                                                         ? (colorIndex & 0xf)
-                                                                         : (colorIndex >> 4)];
+                                    if (cell[0] == 0 && colorIndex >= 0xF0 && colorIndex <= 0xF3)
+                                        palette_index = (uint8_t)(31 + ((colorIndex & 3) << 5));
+                                    else
+                                        palette_index = tv_textmode_palette_sram[((glyph_row >> glyph_x) & 1)
+                                                                             ? (colorIndex & 0xf)
+                                                                             : (colorIndex >> 4)];
                                     cout32 = conv_color[li][palette_index];
                                     c_4 = (uint8_t*)&cout32;
                                 }

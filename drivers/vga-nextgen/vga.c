@@ -382,10 +382,20 @@ void __time_critical_func() dma_handler_VGA() {
             uint8_t* text_buffer_line = &text_buffer[screen_line / font_height * text_buffer_width * 2];
 
             for (int x = 0; x < text_buffer_width; x++) {
+                const uint8_t c = *text_buffer_line++;
+                const uint8_t color_index = *text_buffer_line++;
+                if (c == 0 && color_index >= 0xF0 && color_index <= 0xF3) {
+                    const uint16_t preview = palette[0][31 + ((color_index & 3) << 5)];
+                    for (int pair = 0; pair < 4; pair++) {
+                        *output_buffer_16bit++ = preview;
+                        if (text_buffer_width == 40) *output_buffer_16bit++ = preview;
+                    }
+                    continue;
+                }
                 //из таблицы символов получаем "срез" текущего символа
-                uint8_t glyph_pixels = font_8x16[*text_buffer_line++ * font_height + glyph_line];
+                uint8_t glyph_pixels = font_8x16[c * font_height + glyph_line];
                 //считываем из быстрой палитры начало таблицы быстрого преобразования 2-битных комбинаций цветов пикселей
-                uint16_t* color = &txt_palette_fast[*text_buffer_line++ * 4];
+                uint16_t* color = &txt_palette_fast[color_index * 4];
 #if 0
                 if (cursor_blink_state && !manager_started &&
                     (screen_line / 16 == CURSOR_Y && x == CURSOR_X && glyph_line >= 11 && glyph_line <= 13)) {

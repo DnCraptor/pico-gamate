@@ -10,6 +10,16 @@ void draw_text(const char string[TEXTMODE_COLS + 1], uint32_t x, uint32_t y, uin
     }
 }
 
+void draw_palette_preview(uint32_t x, uint32_t y, uint8_t palette_no, uint8_t width) {
+    if (palette_no > 3 || x >= TEXTMODE_COLS || y >= TEXTMODE_ROWS) return;
+    if (width > TEXTMODE_COLS - x) width = TEXTMODE_COLS - x;
+    uint8_t* t_buf = text_buffer + TEXTMODE_COLS * 2 * y + 2 * x;
+    while (width--) {
+        *t_buf++ = 0;
+        *t_buf++ = (uint8_t)(0xF0 | palette_no);
+    }
+}
+
 void draw_window(const char title[TEXTMODE_COLS + 1], uint32_t x, uint32_t y, uint32_t width, uint32_t height) {
     char line[width + 1];
     memset(line, 0, sizeof line);

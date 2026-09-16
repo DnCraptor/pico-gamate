@@ -510,14 +510,17 @@ static void __scratch_x("tv_main_loop") main_video_loopTV() {
                             const uint16_t offset = y / 8 * (TEXTMODE_COLS * 2) + x * 2;
                             const uint8_t c = text_buffer[offset];
                             const uint8_t colorIndex = text_buffer[offset + 1];
-                            uint8_t glyph_row = font_6x8[c * 8 + y % 8];
-
-                            for (int bit = 6; bit--;) {
-                                *output_buffer++ = glyph_row & 1
-                                                       ? textmode_palette[colorIndex & 0xf] //цвет шрифта
-                                                       : textmode_palette[colorIndex >> 4]; //цвет фона
-
-                                glyph_row >>= 1;
+                            if (c == 0 && colorIndex >= 0xF0 && colorIndex <= 0xF3) {
+                                const uint8_t preview = (uint8_t)(31 + ((colorIndex & 3) << 5));
+                                for (int bit = 6; bit--;) *output_buffer++ = preview;
+                            } else {
+                                uint8_t glyph_row = font_6x8[c * 8 + y % 8];
+                                for (int bit = 6; bit--;) {
+                                    *output_buffer++ = glyph_row & 1
+                                                           ? textmode_palette[colorIndex & 0xf] //цвет шрифта
+                                                           : textmode_palette[colorIndex >> 4]; //цвет фона
+                                    glyph_row >>= 1;
+                                }
                             }
                         }
                         *output_buffer = 200;

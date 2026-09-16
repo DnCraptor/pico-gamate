@@ -64,7 +64,7 @@ uint32_t rgb2;
 uint32_t rgb3;
 
 SETTINGS settings = {
-    .version = 3,
+    .version = 4,
     .swap_ab = false,
     .aspect_ratio = false,
     .gray_lines = 0,
@@ -80,7 +80,11 @@ SETTINGS settings = {
     .gray_level = 1,
     .tv_system = 0,
     .demo_duration = 0,
-    .color_mode = true
+    .color_mode = true,
+    .preset_rgb0 = 0,
+    .preset_rgb1 = 0,
+    .preset_rgb2 = 0,
+    .preset_rgb3 = 0
 };
 
 typedef struct input_bits_s {
@@ -290,6 +294,8 @@ bool isExecutable(const char pathname[255],const char *extensions) {
 
 static bool demo_active = false;
 
+static void randomize_custom_palette();
+
 bool filebrowser_loadfile(const char pathname[256]) {
     UINT bytes_read = 0;
     FIL file;
@@ -393,6 +399,7 @@ bool filebrowser_loadfile(const char pathname[256]) {
 
     rom_size = load_size;
     strcpy(filename, fileinfo.fname);
+    randomize_custom_palette();
     return true;
 }
 
@@ -901,8 +908,17 @@ static const char* config_video_name() {
 #endif
 }
 
+static constexpr uint8_t PALETTE_CUSTOM = count_of(palettes);
+static constexpr uint8_t PALETTE_CUSTOM_PRESET = count_of(palettes) + 1;
+static constexpr uint8_t PALETTE_CUSTOM_RANDOM = count_of(palettes) + 2;
+
+static const uint32_t preset_rgb0[] = { 0xD4FFFD, 0xD4FFF3 };
+static const uint32_t preset_rgb1[] = { 0xF79036, 0xFF8000 };
+static const uint32_t preset_rgb2[] = { 0x139566, 0x349BC0, 0x009999 };
+static const uint32_t preset_rgb3[] = { 0x005252, 0x6B0400 };
+
 static void settings_defaults() {
-    settings.version = 3;
+    settings.version = 4;
     settings.swap_ab = false;
 #if HDMI
     settings.aspect_ratio = 1; // 1:2
@@ -923,6 +939,10 @@ static void settings_defaults() {
     settings.instant_ignition = false;
     settings.demo_duration = 0;
     settings.color_mode = true;
+    settings.preset_rgb0 = 0;
+    settings.preset_rgb1 = 0;
+    settings.preset_rgb2 = 0;
+    settings.preset_rgb3 = 0;
 }
 
 static void settings_sanitize() {
@@ -933,7 +953,11 @@ static void settings_sanitize() {
     if (settings.tv_system > 1) settings.tv_system = 0;
     if (settings.ghosting > 5) settings.ghosting = 4;
     if (settings.save_slot > 5) settings.save_slot = 0;
-    if (settings.palette > count_of(palettes)) settings.palette = 0;
+    if (settings.palette > PALETTE_CUSTOM_RANDOM) settings.palette = 0;
+    if (settings.preset_rgb0 >= count_of(preset_rgb0)) settings.preset_rgb0 = 0;
+    if (settings.preset_rgb1 >= count_of(preset_rgb1)) settings.preset_rgb1 = 0;
+    if (settings.preset_rgb2 >= count_of(preset_rgb2)) settings.preset_rgb2 = 0;
+    if (settings.preset_rgb3 >= count_of(preset_rgb3)) settings.preset_rgb3 = 0;
     if (settings.demo_duration >= count_of(demo_seconds)) settings.demo_duration = 0;
 #if VGA
     if (settings.aspect_ratio > 2) settings.aspect_ratio = 2;
@@ -980,7 +1004,7 @@ void load_config() {
             UINT bytes_read = 0;
             if (FR_OK == f_read(&file, &loaded, sizeof(loaded), &bytes_read) &&
                 bytes_read == sizeof(loaded) &&
-                loaded.version == 3) {
+                loaded.version == 4) {
                 settings = loaded;
             }
             f_close(&file);
@@ -1023,7 +1047,7 @@ const MenuItem menu_items[] = {
         {"Swap AB <> BA: %s",     ARRAY, &settings.swap_ab,  nullptr, 1, {"NO ",       "YES"}},
         {},
         { "Ghosting pix: %i ", INT, &settings.ghosting, nullptr, 5 },
-        { "Palette: %s ", ARRAY, &settings.palette, nullptr, count_of(palettes), {
+        { "Palette: %s ", ARRAY, &settings.palette, nullptr, PALETTE_CUSTOM_RANDOM, {
                   "DEFAULT          "
                 , "BLACK & WHITE    "
                 , "BGB              "
@@ -1059,6 +1083,8 @@ const MenuItem menu_items[] = {
                 , "VIRTUAL_BOY      "
                 , "TV-LINK          "
                 , "CUSTOM           "
+                , "CUSTOM PRESET    "
+                , "CUSTOM RANDOM    "
          }},
         { "RGB0: %06Xh ", HEX, &rgb0, nullptr, 0xFFFFFF },
         { "RGB1: %06Xh ", HEX, &rgb1, nullptr, 0xFFFFFF },
@@ -1110,12 +1136,17 @@ static inline uint32_t fast1of32(uint32_t v, int i) {
 }
 
 static inline void update_palette() {
-    if (count_of(palettes) <= settings.palette) {
+    if (settings.palette == PALETTE_CUSTOM) {
         rgb0 = settings.rgb0;
         rgb1 = settings.rgb1;
         rgb2 = settings.rgb2;
         rgb3 = settings.rgb3;
-    } else {
+    } else if (settings.palette == PALETTE_CUSTOM_PRESET) {
+        rgb0 = preset_rgb0[settings.preset_rgb0];
+        rgb1 = preset_rgb1[settings.preset_rgb1];
+        rgb2 = preset_rgb2[settings.preset_rgb2];
+        rgb3 = preset_rgb3[settings.preset_rgb3];
+    } else if (settings.palette != PALETTE_CUSTOM_RANDOM) {
         const uint8_t* palette = palettes[settings.palette];
         rgb0 = RGB888(palette[0], palette[1], palette[2]);
         rgb1 = RGB888(palette[3], palette[4], palette[5]);
@@ -1147,6 +1178,26 @@ static inline void update_palette() {
     for (int i = 0; i < 32; ++i) {
         graphics_set_palette(i + 96, RGB888(fast1of32(r, i), fast1of32(g, i), fast1of32(b, i)));
     }
+}
+
+static uint32_t palette_random_state = 0;
+
+static uint32_t palette_random_next() {
+    if (!palette_random_state)
+        palette_random_state = (uint32_t)time_us_64() ^ 0x9E3779B9u;
+    palette_random_state ^= palette_random_state << 13;
+    palette_random_state ^= palette_random_state >> 17;
+    palette_random_state ^= palette_random_state << 5;
+    return palette_random_state;
+}
+
+static void randomize_custom_palette() {
+    if (settings.palette != PALETTE_CUSTOM_RANDOM) return;
+    rgb0 = preset_rgb0[palette_random_next() % count_of(preset_rgb0)];
+    rgb1 = preset_rgb1[palette_random_next() % count_of(preset_rgb1)];
+    rgb2 = preset_rgb2[palette_random_next() % count_of(preset_rgb2)];
+    rgb3 = preset_rgb3[palette_random_next() % count_of(preset_rgb3)];
+    update_palette();
 }
 
 static inline void stop_ay_sound() {
@@ -1199,7 +1250,19 @@ void menu() {
             if (i == current_item) {
                 switch (item->type) {
                     case HEX:
-                        if (item->max_value != 0 && count_of(palettes) <= settings.palette) {
+                        if (item->max_value != 0 && settings.palette == PALETTE_CUSTOM_PRESET) {
+                            uint8_t* preset = nullptr;
+                            uint8_t preset_count = 0;
+                            if (item->value == &rgb0) { preset = &settings.preset_rgb0; preset_count = count_of(preset_rgb0); }
+                            if (item->value == &rgb1) { preset = &settings.preset_rgb1; preset_count = count_of(preset_rgb1); }
+                            if (item->value == &rgb2) { preset = &settings.preset_rgb2; preset_count = count_of(preset_rgb2); }
+                            if (item->value == &rgb3) { preset = &settings.preset_rgb3; preset_count = count_of(preset_rgb3); }
+                            if (preset) {
+                                if (gamepad1_bits.right && *preset + 1 < preset_count) (*preset)++;
+                                if (gamepad1_bits.left && *preset > 0) (*preset)--;
+                                update_palette();
+                            }
+                        } else if (item->max_value != 0 && settings.palette == PALETTE_CUSTOM) {
                             uint32_t* value = (uint32_t *)item->value;
                             if (h_code >= 0) {
                                 if (hex_digit < 0) hex_digit = 0;
@@ -1316,7 +1379,22 @@ void menu() {
             static char result[TEXTMODE_COLS];
             switch (item->type) {
                 case HEX:
-                    snprintf(result, TEXTMODE_COLS, item->text, *(uint32_t*)item->value);
+                    if (settings.palette == PALETTE_CUSTOM_PRESET) {
+                        uint8_t pi = 0, pc = 0;
+                        if (item->value == &rgb0) { pi = settings.preset_rgb0; pc = count_of(preset_rgb0); }
+                        if (item->value == &rgb1) { pi = settings.preset_rgb1; pc = count_of(preset_rgb1); }
+                        if (item->value == &rgb2) { pi = settings.preset_rgb2; pc = count_of(preset_rgb2); }
+                        if (item->value == &rgb3) { pi = settings.preset_rgb3; pc = count_of(preset_rgb3); }
+                        const unsigned rgb_index = item->value == &rgb0 ? 0 : item->value == &rgb1 ? 1 : item->value == &rgb2 ? 2 : 3;
+                        snprintf(result, TEXTMODE_COLS, "RGB%u: <%06Xh> %u/%u ",
+                                 rgb_index, *(uint32_t*)item->value, pi + 1, pc);
+                    } else if (settings.palette == PALETTE_CUSTOM_RANDOM) {
+                        const unsigned rgb_index = item->value == &rgb0 ? 0 : item->value == &rgb1 ? 1 : item->value == &rgb2 ? 2 : 3;
+                        snprintf(result, TEXTMODE_COLS, "RGB%u: %06Xh RANDOM",
+                                 rgb_index, *(uint32_t*)item->value);
+                    } else {
+                        snprintf(result, TEXTMODE_COLS, item->text, *(uint32_t*)item->value);
+                    }
                     if (i == current_item && hex_digit >= 0 && hex_digit < 6) {
                         hex_edit_mode = true;
                         if (blink) {
@@ -1339,6 +1417,15 @@ void menu() {
                     snprintf(result, TEXTMODE_COLS, "%s", item->text);
             }
             draw_text(result, x, y, color, bg_color);
+            if (item->value == &settings.palette) {
+                for (uint8_t p = 0; p < 4; ++p)
+                    draw_palette_preview(TEXTMODE_COLS - 8 + p * 2, y, p, 2);
+            } else if (item->type == HEX &&
+                       (item->value == &rgb0 || item->value == &rgb1 ||
+                        item->value == &rgb2 || item->value == &rgb3)) {
+                const uint8_t p = item->value == &rgb0 ? 0 : item->value == &rgb1 ? 1 : item->value == &rgb2 ? 2 : 3;
+                draw_palette_preview(TEXTMODE_COLS - 3, y, p, 3);
+            }
         }
 
         if (gamepad1_bits.b || (gamepad1_bits.select && !gamepad1_bits.start))
@@ -1395,7 +1482,7 @@ void menu() {
 #else
     graphics_set_mode(GRAPHICSMODE_DEFAULT);
 #endif
-    if (count_of(palettes) <= settings.palette) {
+    if (settings.palette == PALETTE_CUSTOM) {
         settings.rgb0 = rgb0;
         settings.rgb1 = rgb1;
         settings.rgb2 = rgb2;

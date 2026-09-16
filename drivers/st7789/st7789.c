@@ -241,12 +241,16 @@ __not_in_flash_func(refresh_lcd)() {
                     const uint16_t offset = (y / 8) * (TEXTMODE_COLS * 2) + x * 2;
                     const uint8_t c = text_buffer[offset];
                     const uint8_t colorIndex = text_buffer[offset + 1];
-                    const uint8_t glyph_row = font_6x8[c * 8 + y % 8];
-
-                    for (uint8_t bit = 0; bit < 6; bit++) {
-                        st7789_lcd_put_pixel(pio, sm, textmode_palette[(c && CHECK_BIT(glyph_row, bit))
-                                                                       ? colorIndex & 0x0F
-                                                                       : colorIndex >> 4 & 0x0F]);
+                    if (c == 0 && colorIndex >= 0xF0 && colorIndex <= 0xF3) {
+                        const uint16_t preview = palette[31 + ((colorIndex & 3) << 5)];
+                        for (uint8_t bit = 0; bit < 6; bit++) st7789_lcd_put_pixel(pio, sm, preview);
+                    } else {
+                        const uint8_t glyph_row = font_6x8[c * 8 + y % 8];
+                        for (uint8_t bit = 0; bit < 6; bit++) {
+                            st7789_lcd_put_pixel(pio, sm, textmode_palette[(c && CHECK_BIT(glyph_row, bit))
+                                                                           ? colorIndex & 0x0F
+                                                                           : colorIndex >> 4 & 0x0F]);
+                        }
                     }
                 }
                 st7789_lcd_put_pixel(pio, sm, 0x0000);
