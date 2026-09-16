@@ -50,6 +50,8 @@ static uint8_t protection = 0;
 
 char __uninitialized_ram(filename[256]);
 static uint32_t __uninitialized_ram(rom_size) = 0;
+static bool game_loaded = false;
+static bool game_ini_linked = false;
 
 static FATFS fs;
 bool reboot = false;
@@ -294,7 +296,11 @@ bool isExecutable(const char pathname[255],const char *extensions) {
 
 static bool demo_active = false;
 
+static inline void update_palette();
 static void randomize_custom_palette();
+static void apply_game_palette_on_load();
+static bool load_game_palette_ini();
+static bool game_palette_ini_exists();
 
 bool filebrowser_loadfile(const char pathname[256]) {
     UINT bytes_read = 0;
@@ -399,7 +405,8 @@ bool filebrowser_loadfile(const char pathname[256]) {
 
     rom_size = load_size;
     strcpy(filename, fileinfo.fname);
-    randomize_custom_palette();
+    game_loaded = true;
+    apply_game_palette_on_load();
     return true;
 }
 
@@ -743,6 +750,7 @@ enum menu_type_e {
     LOAD,
     START_DEMO,
     ROM_SELECT,
+    GAME_INI,
     RETURN,
 };
 
@@ -1061,6 +1069,82 @@ void save_config() {
         config_write(pathname);
     }
 }
+
+static bool game_palette_ini_path(char* pathname, size_t size) {
+    if (!game_loaded || !filename[0]) return false;
+    char basename[128];
+    snprintf(basename, sizeof(basename), "%s", filename);
+    char* dot = strrchr(basename, '.');
+    if (dot && dot != basename) *dot = '\0';
+    return snprintf(pathname, size, "/.config/gamate/%s.ini", basename) > 0;
+}
+
+static bool game_palette_ini_exists() {
+    char pathname[256];
+    FILINFO info;
+    return game_palette_ini_path(pathname, sizeof(pathname)) &&
+           FR_OK == f_stat(pathname, &info);
+}
+
+static bool write_game_palette_ini() {
+    char pathname[256];
+    if (!game_palette_ini_path(pathname, sizeof(pathname))) return false;
+    config_mkdirs();
+
+    char data[128];
+    const int len = snprintf(data, sizeof(data),
+        "[palette]\r\nrgb0=%06lX\r\nrgb1=%06lX\r\nrgb2=%06lX\r\nrgb3=%06lX\r\n",
+        (unsigned long)rgb0, (unsigned long)rgb1,
+        (unsigned long)rgb2, (unsigned long)rgb3);
+    if (len <= 0 || (size_t)len >= sizeof(data)) return false;
+
+    FIL file;
+    if (FR_OK != f_open(&file, pathname, FA_CREATE_ALWAYS | FA_WRITE)) return false;
+    UINT written = 0;
+    const FRESULT fr = f_write(&file, data, (UINT)len, &written);
+    const FRESULT close_fr = f_close(&file);
+    return fr == FR_OK && written == (UINT)len && close_fr == FR_OK;
+}
+
+static bool load_game_palette_ini() {
+    char pathname[256];
+    if (!game_palette_ini_path(pathname, sizeof(pathname))) return false;
+
+    FIL file;
+    if (FR_OK != f_open(&file, pathname, FA_READ)) return false;
+    char data[160] = { 0 };
+    UINT bytes_read = 0;
+    const FRESULT fr = f_read(&file, data, sizeof(data) - 1, &bytes_read);
+    f_close(&file);
+    if (fr != FR_OK || bytes_read == 0) return false;
+
+    unsigned long c0, c1, c2, c3;
+    if (4 != sscanf(data, "[palette]\r\nrgb0=%lx\r\nrgb1=%lx\r\nrgb2=%lx\r\nrgb3=%lx",
+                    &c0, &c1, &c2, &c3)) return false;
+    if (c0 > 0xFFFFFFul || c1 > 0xFFFFFFul ||
+        c2 > 0xFFFFFFul || c3 > 0xFFFFFFul) return false;
+
+    rgb0 = settings.rgb0 = (uint32_t)c0;
+    rgb1 = settings.rgb1 = (uint32_t)c1;
+    rgb2 = settings.rgb2 = (uint32_t)c2;
+    rgb3 = settings.rgb3 = (uint32_t)c3;
+    settings.palette = PALETTE_CUSTOM;
+    update_palette();
+    return true;
+}
+
+static bool game_ini_action() {
+    if (!game_loaded) return false;
+    char pathname[256];
+    if (!game_palette_ini_path(pathname, sizeof(pathname))) return false;
+
+    if (game_ini_linked) {
+        if (FR_OK == f_unlink(pathname)) game_ini_linked = false;
+    } else if (write_game_palette_ini()) {
+        game_ini_linked = true;
+    }
+    return false;
+}
 const MenuItem menu_items[] = {
         {"Swap AB <> BA: %s",     ARRAY, &settings.swap_ab,  nullptr, 1, {"NO ",       "YES"}},
         {},
@@ -1104,6 +1188,7 @@ const MenuItem menu_items[] = {
                 , "CUSTOM PRESET    "
                 , "CUSTOM RANDOM    "
          }},
+        { "", GAME_INI, nullptr, &game_ini_action },
         { "RGB0: %06Xh ", HEX, &rgb0, nullptr, 0xFFFFFF },
         { "RGB1: %06Xh ", HEX, &rgb1, nullptr, 0xFFFFFF },
         { "RGB2: %06Xh ", HEX, &rgb2, nullptr, 0xFFFFFF },
@@ -1226,6 +1311,16 @@ static void randomize_custom_palette() {
     }
     rgb3 = preset_rgb3[palette_random_next() % count_of(preset_rgb3)];
     update_palette();
+}
+
+static void apply_game_palette_on_load() {
+    game_ini_linked = game_palette_ini_exists();
+    if (settings.palette == PALETTE_CUSTOM_RANDOM) {
+        // Random always wins: a per-game palette link may exist, but is ignored.
+        randomize_custom_palette();
+    } else if (!load_game_palette_ini()) {
+        update_palette();
+    }
 }
 
 static inline void stop_ay_sound() {
@@ -1393,6 +1488,9 @@ void menu() {
                             exit = true;
                         }
                         break;
+                    case GAME_INI:
+                        // Action is handled by the callback below; unavailable before a ROM is loaded.
+                        break;
                     default:
                         break;
                 }
@@ -1438,6 +1536,15 @@ void menu() {
                     break;
                 case TEXT:
                     snprintf(result, TEXTMODE_COLS, item->text, item->value);
+                    break;
+                case GAME_INI:
+                    if (!game_loaded) {
+                        snprintf(result, TEXTMODE_COLS, "Save for this game [N/A]");
+                        color = 6;
+                    } else {
+                        snprintf(result, TEXTMODE_COLS, "%s",
+                                 game_ini_linked ? "Unlink game ini file" : "Save for this game");
+                    }
                     break;
                 case NONE:
                     color = 6;
