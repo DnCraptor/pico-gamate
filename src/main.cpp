@@ -912,10 +912,28 @@ static constexpr uint8_t PALETTE_CUSTOM = count_of(palettes);
 static constexpr uint8_t PALETTE_CUSTOM_PRESET = count_of(palettes) + 1;
 static constexpr uint8_t PALETTE_CUSTOM_RANDOM = count_of(palettes) + 2;
 
-static const uint32_t preset_rgb0[] = { 0xD4FFFD, 0xD4FFF3 };
-static const uint32_t preset_rgb1[] = { 0xF79036, 0xFF8000 };
-static const uint32_t preset_rgb2[] = { 0x139566, 0x349BC0, 0x009999 };
-static const uint32_t preset_rgb3[] = { 0x005252, 0x6B0400 };
+static const uint32_t preset_rgb0[] = {
+    0xD4FFFD, 0xD4FFF3, 0xFFE9FA, 0xE9E9FF, 0xE9FAFF, 0xE9FFF4,
+    0xF5FFE9, 0xFFF8E9, 0xFFEBE9, 0xD4FFDA, 0xEDFFD4
+};
+static const uint32_t preset_rgb1[] = {
+    0xF79036, 0xFF8000, 0xD2F937, 0x92F937, 0x37F992, 0x37F9D9,
+    0x37D9F9, 0xBDC762, 0x62BAC7, 0xE29BE2, 0xE29BB7
+};
+static const uint32_t preset_rgb2[] = {
+    0x139566, 0x349BC0, 0x009999, 0x909413, 0x319413, 0x139487,
+    0x137294, 0x5041B0, 0x9039D2, 0xCD34B8, 0xCD3476
+};
+static const uint32_t preset_rgb3[] = {
+    0x6C6800, 0x6B0400, 0x366C00, 0x006C48, 0x00686C, 0x00326C,
+    0x04006C, 0x44006C, 0x6C0044, 0x6C0004, 0x000000
+};
+
+// RGB1/RGB2 compatibility groups from spreadsheet coordinates.
+static const uint8_t random_rgb1_group_a[] = { 0, 1, 2, 7, 9, 10 }; // B2,C2,D2,I2,K2,L2
+static const uint8_t random_rgb1_group_b[] = { 3, 4, 5, 6, 8 };      // E2,F2,G2,H2,J2
+static const uint8_t random_rgb2_for_group_a[] = { 0, 1, 2, 4, 5, 6, 7 }; // B3,C3,D3,F3,G3,H3,I3
+static const uint8_t random_rgb2_for_group_b[] = { 3, 8, 9, 10 };          // E3,J3,K3,L3
 
 static void settings_defaults() {
     settings.version = 4;
@@ -1194,8 +1212,18 @@ static uint32_t palette_random_next() {
 static void randomize_custom_palette() {
     if (settings.palette != PALETTE_CUSTOM_RANDOM) return;
     rgb0 = preset_rgb0[palette_random_next() % count_of(preset_rgb0)];
-    rgb1 = preset_rgb1[palette_random_next() % count_of(preset_rgb1)];
-    rgb2 = preset_rgb2[palette_random_next() % count_of(preset_rgb2)];
+    const bool group_a = (palette_random_next() & 1u) == 0;
+    if (group_a) {
+        const uint8_t i1 = random_rgb1_group_a[palette_random_next() % count_of(random_rgb1_group_a)];
+        const uint8_t i2 = random_rgb2_for_group_a[palette_random_next() % count_of(random_rgb2_for_group_a)];
+        rgb1 = preset_rgb1[i1];
+        rgb2 = preset_rgb2[i2];
+    } else {
+        const uint8_t i1 = random_rgb1_group_b[palette_random_next() % count_of(random_rgb1_group_b)];
+        const uint8_t i2 = random_rgb2_for_group_b[palette_random_next() % count_of(random_rgb2_for_group_b)];
+        rgb1 = preset_rgb1[i1];
+        rgb2 = preset_rgb2[i2];
+    }
     rgb3 = preset_rgb3[palette_random_next() % count_of(preset_rgb3)];
     update_palette();
 }
