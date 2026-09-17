@@ -922,26 +922,27 @@ static constexpr uint8_t PALETTE_CUSTOM_RANDOM = count_of(palettes) + 2;
 
 static const uint32_t preset_rgb0[] = {
     0xD4FFFD, 0xD4FFF3, 0xFFE9FA, 0xE9E9FF, 0xE9FAFF, 0xE9FFF4,
-    0xF5FFE9, 0xFFF8E9, 0xFFEBE9, 0xD4FFDA, 0xEDFFD4
+    0xF5FFE9, 0xFFF8E9, 0xFFF2F0, 0xD4FFDA, 0xEDFFD4
 };
 static const uint32_t preset_rgb1[] = {
-    0xF79036, 0xFF8000, 0xD2F937, 0x92F937, 0x37F992, 0x37F9D9,
-    0x37D9F9, 0xBDC762, 0x62BAC7, 0xE29BE2, 0xE29BB7
+    // Cold (B4:G4), then warm (H4:N4).
+    0x92F937, 0x37F992, 0x37F9D9, 0x37D9F9, 0x62BAC7, 0xC0CBD5,
+    0xE29BE2, 0xBDC762, 0xF79036, 0xFF8000, 0xD2F937, 0xE29BB7,
+    0xE0A3F1
 };
 static const uint32_t preset_rgb2[] = {
-    0x139566, 0x349BC0, 0x009999, 0x909413, 0x319413, 0x139487,
-    0x137294, 0x5041B0, 0x9039D2, 0xCD34B8, 0xCD3476
+    // Cold (B5:G5), then warm (H5:N5).
+    0x139566, 0x349BC0, 0x009999, 0x319413, 0x9039D2, 0x137294,
+    0xCD3476, 0xCD34B8, 0x909413, 0xD58B41, 0xD8C835, 0xC339A5,
+    0xE07100
 };
 static const uint32_t preset_rgb3[] = {
     0x6C6800, 0x6B0400, 0x366C00, 0x006C48, 0x00686C, 0x00326C,
     0x04006C, 0x44006C, 0x6C0044, 0x6C0004, 0x000000
 };
 
-// RGB1/RGB2 compatibility groups from spreadsheet coordinates.
-static const uint8_t random_rgb1_group_a[] = { 0, 1, 2, 7, 9, 10 }; // B2,C2,D2,I2,K2,L2
-static const uint8_t random_rgb1_group_b[] = { 3, 4, 5, 6, 8 };      // E2,F2,G2,H2,J2
-static const uint8_t random_rgb2_for_group_a[] = { 0, 1, 2, 4, 5, 6, 7 }; // B3,C3,D3,F3,G3,H3,I3
-static const uint8_t random_rgb2_for_group_b[] = { 3, 8, 9, 10 };          // E3,J3,K3,L3
+static constexpr uint8_t RANDOM_RGB1_COLD_COUNT = 6; // B4:G4
+static constexpr uint8_t RANDOM_RGB2_COLD_COUNT = 6; // B5:G5
 
 static void settings_defaults() {
     settings.version = 4;
@@ -1297,18 +1298,18 @@ static uint32_t palette_random_next() {
 static void randomize_custom_palette() {
     if (settings.palette != PALETTE_CUSTOM_RANDOM) return;
     rgb0 = preset_rgb0[palette_random_next() % count_of(preset_rgb0)];
-    const bool group_a = (palette_random_next() & 1u) == 0;
-    if (group_a) {
-        const uint8_t i1 = random_rgb1_group_a[palette_random_next() % count_of(random_rgb1_group_a)];
-        const uint8_t i2 = random_rgb2_for_group_a[palette_random_next() % count_of(random_rgb2_for_group_a)];
-        rgb1 = preset_rgb1[i1];
-        rgb2 = preset_rgb2[i2];
+
+    // Pick RGB1 from the whole B4:N4 row, then pick RGB2 from the
+    // opposite temperature group.
+    const uint8_t i1 = palette_random_next() % count_of(preset_rgb1);
+    rgb1 = preset_rgb1[i1];
+    if (i1 < RANDOM_RGB1_COLD_COUNT) {
+        const uint8_t warm_count = count_of(preset_rgb2) - RANDOM_RGB2_COLD_COUNT;
+        rgb2 = preset_rgb2[RANDOM_RGB2_COLD_COUNT + palette_random_next() % warm_count];
     } else {
-        const uint8_t i1 = random_rgb1_group_b[palette_random_next() % count_of(random_rgb1_group_b)];
-        const uint8_t i2 = random_rgb2_for_group_b[palette_random_next() % count_of(random_rgb2_for_group_b)];
-        rgb1 = preset_rgb1[i1];
-        rgb2 = preset_rgb2[i2];
+        rgb2 = preset_rgb2[palette_random_next() % RANDOM_RGB2_COLD_COUNT];
     }
+
     rgb3 = preset_rgb3[palette_random_next() % count_of(preset_rgb3)];
     update_palette();
 }
