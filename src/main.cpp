@@ -1911,6 +1911,14 @@ int __time_critical_func(main)() {
 
         while (!reboot) {
             if (fxPressedV) {
+                // Quick-state takes ownership of the current game. Stop Demo
+                // before either saving or loading so it cannot switch ROMs later.
+                demo_active = false;
+                demo_requested = false;
+                demo_advance_pending = false;
+                demo_game_started_at = 0;
+                demo_title_until = 0;
+                gamate_demo_title_visible = false;
                 if (altPressed) {
                     settings.save_slot = fxPressedV;
                     load();
