@@ -1544,7 +1544,7 @@ void menu() {
                         color = 6;
                     } else {
                         snprintf(result, TEXTMODE_COLS, "%s",
-                                 game_ini_linked ? "Unlink game ini file" : "Save for this game");
+                                 game_ini_linked ? "Unlink game ini file    " : "Save for this game    ");
                     }
                     break;
                 case NONE:
