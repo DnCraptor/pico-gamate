@@ -19,6 +19,9 @@
 extern volatile bool gamate_demo_title_visible;
 extern volatile uint16_t gamate_demo_title_width;
 extern uint8_t gamate_demo_title_bitmap[8][316];
+extern volatile bool gamate_demo_countdown_visible;
+extern volatile uint8_t gamate_demo_countdown_width;
+extern uint8_t gamate_demo_countdown_bitmap[8][18];
 
 #if defined(VGA_BASE_PIN)
 #undef TV_BASE_PIN
@@ -233,19 +236,25 @@ enum {
 
 static inline __attribute__((always_inline)) uint8_t gamate_tv_demo_overlay(
         uint8_t color, const int x, const int y) {
-    if (!gamate_demo_title_visible ||
+    if ((!gamate_demo_title_visible && !gamate_demo_countdown_visible) ||
         y < GAMATE_TV_DEMO_BAR_Y0 || y >= GAMATE_TV_DEMO_BAR_Y1)
         return color;
 
     const int title_w = gamate_demo_title_width;
-    if (title_w <= 0)
-        return GAMATE_TV_DEMO_BG;
-
     const int title_x = (320 - title_w) / 2;
-    if (y >= GAMATE_TV_DEMO_TEXT_Y0 && y < GAMATE_TV_DEMO_TEXT_Y1 &&
+    if (gamate_demo_title_visible &&
+        y >= GAMATE_TV_DEMO_TEXT_Y0 && y < GAMATE_TV_DEMO_TEXT_Y1 &&
         x >= title_x && x < title_x + title_w &&
         gamate_demo_title_bitmap[y - GAMATE_TV_DEMO_TEXT_Y0][x - title_x])
         return GAMATE_TV_DEMO_FG;
+
+    if (gamate_demo_countdown_visible && gamate_demo_countdown_width &&
+        y >= GAMATE_TV_DEMO_TEXT_Y0 && y < GAMATE_TV_DEMO_TEXT_Y1) {
+        const int countdown_x = 320 - gamate_demo_countdown_width - 4;
+        if (x >= countdown_x && x < countdown_x + gamate_demo_countdown_width &&
+            gamate_demo_countdown_bitmap[y - GAMATE_TV_DEMO_TEXT_Y0][x - countdown_x])
+            return GAMATE_TV_DEMO_FG;
+    }
 
     return GAMATE_TV_DEMO_BG;
 }

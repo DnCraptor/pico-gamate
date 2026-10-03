@@ -67,7 +67,7 @@ uint32_t rgb2;
 uint32_t rgb3;
 
 SETTINGS settings = {
-    .version = 4,
+    .version = 5,
     .swap_ab = false,
     .aspect_ratio = false,
     .gray_lines = 0,
@@ -87,7 +87,8 @@ SETTINGS settings = {
     .preset_rgb0 = 0,
     .preset_rgb1 = 0,
     .preset_rgb2 = 0,
-    .preset_rgb3 = 0
+    .preset_rgb3 = 0,
+    .demo_name = true
 };
 
 typedef struct input_bits_s {
@@ -223,6 +224,16 @@ __not_in_flash_func(process_kbd_report)(hid_keyboard_report_t const* report, hid
         pageDownPressed = true;
     
     if (altPressed && ctrlPressed && isInReport(report, HID_KEY_DELETE)) {
+#ifndef PICO_RP2040
+        /* Leave the overclocked operating point before watchdog reset.
+         * Lower the clock first while the high VREG voltage is still safe,
+         * then return VREG to the RP2350 nominal 1.10 V. */
+        set_sys_clock_khz(150000, false);
+        vreg_set_voltage(VREG_VOLTAGE_1_10);
+        sleep_ms(10);
+#else
+        set_sys_clock_khz(125000, false);
+#endif
         watchdog_enable(10, true);
         while(true) {
             tight_loop_contents();
@@ -435,6 +446,9 @@ volatile uint8_t gamate_gray_level = 1;
 volatile bool gamate_demo_title_visible = false;
 volatile uint16_t gamate_demo_title_width = 0;
 uint8_t gamate_demo_title_bitmap[8][316] = { 0 };
+volatile bool gamate_demo_countdown_visible = false;
+volatile uint8_t gamate_demo_countdown_width = 0;
+uint8_t gamate_demo_countdown_bitmap[8][18] = { 0 };
 }
 
 static bool demo_requested = false;
@@ -468,6 +482,46 @@ static void demo_prepare_title_bitmap(void) {
             }
         }
     }
+}
+
+static void demo_update_countdown(void) {
+    static unsigned last_seconds = 0xffffffffu;
+    gamate_demo_countdown_visible = false;
+    if (!demo_active || !demo_game_started_at) {
+        last_seconds = 0xffffffffu;
+        return;
+    }
+
+    const uint8_t duration_index = settings.demo_duration < count_of(demo_seconds)
+                                 ? settings.demo_duration : 0;
+    const uint64_t duration_us = (uint64_t)demo_seconds[duration_index] * 1000000ull;
+    const uint64_t elapsed_us = time_us_64() - demo_game_started_at;
+    const uint64_t remaining_us = elapsed_us < duration_us ? duration_us - elapsed_us : 0;
+    const unsigned seconds = (unsigned)((remaining_us + 999999ull) / 1000000ull);
+
+    if (seconds == last_seconds) {
+        gamate_demo_countdown_visible = gamate_demo_countdown_width != 0;
+        return;
+    }
+    last_seconds = seconds;
+
+    char text[4];
+    snprintf(text, sizeof(text), "%03u", seconds);
+    const size_t len = strlen(text);
+    gamate_demo_countdown_width = (uint8_t)(len * 6);
+    memset(gamate_demo_countdown_bitmap, 0, sizeof(gamate_demo_countdown_bitmap));
+    for (size_t c = 0; c < len; ++c) {
+        const uint8_t *glyph = &font_6x8[(uint8_t)text[c] * 8];
+        for (int gy = 0; gy < 8; ++gy) {
+            uint8_t bits = glyph[gy];
+            uint8_t *dst = &gamate_demo_countdown_bitmap[gy][c * 6];
+            for (int gx = 0; gx < 6; ++gx) {
+                dst[gx] = bits & 1;
+                bits >>= 1;
+            }
+        }
+    }
+    gamate_demo_countdown_visible = gamate_demo_countdown_width != 0;
 }
 
 static bool demo_load_next_rom(const char *after_name) {
@@ -517,7 +571,8 @@ static bool demo_load_next_rom(const char *after_name) {
         demo_prepare_title_bitmap();
         demo_game_started_at = time_us_64();
         demo_title_until = demo_game_started_at + 10000000ull;
-        gamate_demo_title_visible = gamate_demo_title_width != 0;
+        gamate_demo_title_visible = settings.demo_name && gamate_demo_title_width != 0;
+        demo_update_countdown();
         return true;
     }
 }
@@ -968,7 +1023,7 @@ static constexpr uint8_t RANDOM_RGB1_COLD_COUNT = 6; // B4:G4
 static constexpr uint8_t RANDOM_RGB2_COLD_COUNT = 6; // B5:G5
 
 static void settings_defaults() {
-    settings.version = 4;
+    settings.version = 5;
     settings.swap_ab = false;
 #if HDMI
     settings.aspect_ratio = 1; // 1:2
@@ -993,12 +1048,14 @@ static void settings_defaults() {
     settings.preset_rgb1 = 0;
     settings.preset_rgb2 = 0;
     settings.preset_rgb3 = 0;
+    settings.demo_name = true;
 }
 
 static void settings_sanitize() {
     settings.swap_ab = settings.swap_ab ? true : false;
     settings.instant_ignition = settings.instant_ignition ? true : false;
     settings.color_mode = settings.color_mode ? true : false;
+    settings.demo_name = settings.demo_name ? true : false;
     if (settings.gray_level > 3) settings.gray_level = 1;
     if (settings.tv_system > 1) settings.tv_system = 0;
     if (settings.ghosting > 5) settings.ghosting = 4;
@@ -1050,12 +1107,19 @@ void load_config() {
     if (FR_OK == f_mount(&fs, "", 1)) {
         config_mkdirs();
         if (FR_OK == f_open(&file, pathname, FA_READ)) {
-            SETTINGS loaded;
+            SETTINGS loaded = {};
             UINT bytes_read = 0;
-            if (FR_OK == f_read(&file, &loaded, sizeof(loaded), &bytes_read) &&
-                bytes_read == sizeof(loaded) &&
-                loaded.version == 4) {
-                settings = loaded;
+            if (FR_OK == f_read(&file, &loaded, sizeof(loaded), &bytes_read)) {
+                if (bytes_read == sizeof(loaded) && loaded.version == 5) {
+                    settings = loaded;
+                } else if (bytes_read == sizeof(loaded) - sizeof(loaded.demo_name) &&
+                           loaded.version == 4) {
+                    /* v4 is an exact prefix of v5. Preserve the old config and
+                     * enable the newly introduced Demo-name OSD by default. */
+                    settings = loaded;
+                    settings.version = 5;
+                    settings.demo_name = true;
+                }
             }
             f_close(&file);
         }
@@ -1233,6 +1297,7 @@ const MenuItem menu_items[] = {
         { "Gray level: %s",            ARRAY, &settings.gray_level,      nullptr, 3, {"0", "1", "2", "3"}},
 #endif
         { "Demo game time: %s", ARRAY, &settings.demo_duration, nullptr, 7, { "15 sec", "30 sec", "45 sec", "1 min ", "2 min ", "3 min ", "5 min ", "10 min" } },
+        { "Demo name OSD: %s", ARRAY, &settings.demo_name, nullptr, 1, { "OFF", "ON " } },
 #if SOFTTV
         { "" },
         { "TV system %s", ARRAY, &settings.tv_system, nullptr, 1, { "PAL ", "NTSC" } },
@@ -1524,6 +1589,7 @@ void menu() {
                             demo_current_name[0] = '\0';
                             demo_advance_pending = true;
                             gamate_demo_title_visible = false;
+            gamate_demo_countdown_visible = false;
                             reboot = true;
                             exit = true;
                         }
@@ -1891,6 +1957,7 @@ int __time_critical_func(main)() {
             demo_requested = false;
             demo_advance_pending = false;
             gamate_demo_title_visible = false;
+            gamate_demo_countdown_visible = false;
             filebrowser(HOME_DIR, "bin");
 
             if (demo_requested) {
@@ -1903,6 +1970,7 @@ int __time_critical_func(main)() {
             } else {
                 demo_active = false;
                 gamate_demo_title_visible = false;
+            gamate_demo_countdown_visible = false;
             }
             need_browser = false;
         }
@@ -1994,6 +2062,7 @@ int __time_critical_func(main)() {
                     demo_game_started_at = 0;
                     demo_title_until = 0;
                     gamate_demo_title_visible = false;
+            gamate_demo_countdown_visible = false;
                     direct_browser_loaded_game = true;
                     reboot = true;
                     continue;
@@ -2044,6 +2113,7 @@ int __time_critical_func(main)() {
                 demo_game_started_at = 0;
                 demo_title_until = 0;
                 gamate_demo_title_visible = false;
+            gamate_demo_countdown_visible = false;
                 if (altPressed) {
                     settings.save_slot = fxPressedV;
                     load();
@@ -2061,8 +2131,9 @@ int __time_critical_func(main)() {
             screen_update((uint8_t *)SCREEN, settings.ghosting); // It takes exactly 72900 clocks at 4.433MHz per frame.
 
             if (demo_active) {
-                gamate_demo_title_visible = gamate_demo_title_width != 0 &&
+                gamate_demo_title_visible = settings.demo_name && gamate_demo_title_width != 0 &&
                                             time_us_64() < demo_title_until;
+                demo_update_countdown();
                 const uint8_t duration_index = settings.demo_duration < count_of(demo_seconds)
                                              ? settings.demo_duration : 0;
                 const uint64_t duration_us = (uint64_t)demo_seconds[duration_index] * 1000000ull;
@@ -2098,6 +2169,7 @@ int __time_critical_func(main)() {
             }
             demo_active = false;
             gamate_demo_title_visible = false;
+            gamate_demo_countdown_visible = false;
         }
 
         reboot = false;
@@ -2112,6 +2184,7 @@ int __time_critical_func(main)() {
         demo_requested = false;
         demo_advance_pending = false;
         gamate_demo_title_visible = false;
+        gamate_demo_countdown_visible = false;
         need_browser = true;
     }
     __unreachable();

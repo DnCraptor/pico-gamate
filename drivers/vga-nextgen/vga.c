@@ -18,6 +18,9 @@ extern volatile uint8_t gamate_gray_level;
 extern volatile bool gamate_demo_title_visible;
 extern volatile uint16_t gamate_demo_title_width;
 extern uint8_t gamate_demo_title_bitmap[8][316];
+extern volatile bool gamate_demo_countdown_visible;
+extern volatile uint8_t gamate_demo_countdown_width;
+extern uint8_t gamate_demo_countdown_bitmap[8][18];
 
 uint16_t pio_program_VGA_instructions[] = {
     //     .wrap_target
@@ -127,7 +130,8 @@ static inline uint16_t gamate_dup_wire_pixel(const uint8_t p) {
 static inline __attribute__((always_inline)) void gamate_vga_draw_demo_title(
         uint8_t* dst, const int screen_y) {
     enum { TITLE_BAR_Y0 = 456, TITLE_TEXT_Y0 = 460, TITLE_TEXT_Y1 = 476, TITLE_BAR_Y1 = 480 };
-    if (!gamate_demo_title_visible || screen_y < TITLE_BAR_Y0 || screen_y >= TITLE_BAR_Y1) return;
+    if ((!gamate_demo_title_visible && !gamate_demo_countdown_visible) ||
+        screen_y < TITLE_BAR_Y0 || screen_y >= TITLE_BAR_Y1) return;
 
     /* Full-width overlay. Use explicit stores in the DMA IRQ; do not call
      * memset/memcpy from this path. */
@@ -135,13 +139,23 @@ static inline __attribute__((always_inline)) void gamate_vga_draw_demo_title(
 
     if (screen_y >= TITLE_TEXT_Y0 && screen_y < TITLE_TEXT_Y1) {
         const int title_w = gamate_demo_title_width;
-        if (title_w > 0) {
+        if (gamate_demo_title_visible && title_w > 0) {
             const int title_x = (GAMATE_PHOTO_WIDTH_BYTES - title_w * 2) / 2;
             const uint8_t* bits = gamate_demo_title_bitmap[(screen_y - TITLE_TEXT_Y0) >> 1];
             for (int x = 0; x < title_w; ++x) {
                 if (bits[x]) {
                     dst[title_x + x * 2] = 0xff;
                     dst[title_x + x * 2 + 1] = 0xff;
+                }
+            }
+        }
+        if (gamate_demo_countdown_visible && gamate_demo_countdown_width) {
+            const int countdown_x = GAMATE_PHOTO_WIDTH_BYTES - gamate_demo_countdown_width * 2 - 8;
+            const uint8_t* bits = gamate_demo_countdown_bitmap[(screen_y - TITLE_TEXT_Y0) >> 1];
+            for (int x = 0; x < gamate_demo_countdown_width; ++x) {
+                if (bits[x]) {
+                    dst[countdown_x + x * 2] = 0xff;
+                    dst[countdown_x + x * 2 + 1] = 0xff;
                 }
             }
         }
@@ -345,7 +359,7 @@ void __time_critical_func() dma_handler_VGA() {
 
     if (graphics_mode != TEXTMODE_DEFAULT && graphics_mode != TEXTMODE_53x30 &&
         graphics_mode != TEXTMODE_160x100 &&
-        gamate_demo_title_visible && screen_line >= 456 && screen_line < 480) {
+        (gamate_demo_title_visible || gamate_demo_countdown_visible) && screen_line >= 456 && screen_line < 480) {
         uint8_t* dst = (uint8_t *)(*output_buffer) + shift_picture;
         gamate_vga_draw_demo_title(dst, screen_line);
         dma_channel_set_read_addr(dma_chan_ctrl, output_buffer, false);

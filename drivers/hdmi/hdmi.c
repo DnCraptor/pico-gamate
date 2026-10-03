@@ -15,6 +15,9 @@ extern volatile uint8_t gamate_hdmi_aspect_mode;
 extern volatile bool gamate_demo_title_visible;
 extern volatile uint16_t gamate_demo_title_width;
 extern uint8_t gamate_demo_title_bitmap[8][316];
+extern volatile bool gamate_demo_countdown_visible;
+extern volatile uint8_t gamate_demo_countdown_width;
+extern uint8_t gamate_demo_countdown_bitmap[8][18];
 #include "gamate_photo.h"
 
 //PIO параметры
@@ -426,7 +429,7 @@ static void __not_in_flash_func(dma_handler_HDMI)() {
         /* Demo title is a screen overlay, independent of gameplay scaling
          * and of the bezel. HDMI logical 320x240 is doubled by the
          * established transport to physical 640x480. */
-        if (gamate_demo_title_visible &&
+        if ((gamate_demo_title_visible || gamate_demo_countdown_visible) &&
             graphics_mode != TEXTMODE_DEFAULT && graphics_mode != TEXTMODE_53x30 &&
             y >= 228 && y < 240) {
             uint8_t* title_dst = activ_buf + 72;
@@ -434,10 +437,16 @@ static void __not_in_flash_func(dma_handler_HDMI)() {
             if (y >= 230 && y < 238) {
                 const int title_w = gamate_demo_title_width;
                 const int title_x = (SCREEN_WIDTH - title_w) / 2;
-                if (title_w > 0) {
+                if (gamate_demo_title_visible && title_w > 0) {
                     const uint8_t* bits = gamate_demo_title_bitmap[y - 230];
                     for (int x = 0; x < title_w; ++x)
                         if (bits[x]) title_dst[title_x + x] = gamate_hdmi_demo_fg;
+                }
+                if (gamate_demo_countdown_visible && gamate_demo_countdown_width) {
+                    const int countdown_x = SCREEN_WIDTH - gamate_demo_countdown_width - 4;
+                    const uint8_t* bits = gamate_demo_countdown_bitmap[y - 230];
+                    for (int x = 0; x < gamate_demo_countdown_width; ++x)
+                        if (bits[x]) title_dst[countdown_x + x] = gamate_hdmi_demo_fg;
                 }
             }
         }
