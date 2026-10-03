@@ -15,6 +15,7 @@ bool gamate_psram_init(void);
 bool gamate_psram_available(void);
 size_t gamate_psram_size(void);
 void gamate_psram_reclock(void);
+void gamate_psram_prepare_reset(void);
 
 #ifdef __cplusplus
 }

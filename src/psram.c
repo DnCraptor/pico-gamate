@@ -155,6 +155,12 @@ bool __no_inline_not_in_flash_func(gamate_psram_init)(void) {
     while (qmi_hw->direct_csr & QMI_DIRECT_CSR_BUSY_BITS)
         ;
 
+    /* QMI direct mode blocks normal XIP service.  Leave it before calling
+     * clock/timing helpers: __not_in_flash_func() does not make callees such
+     * as clock_get_hz() resident in SRAM, so a cache miss here can deadlock
+     * startup while direct mode owns QMI. */
+    qmi_hw->direct_csr = 0;
+
     psram_set_timing();
 
     qmi_hw->m[1].rfmt =
@@ -176,7 +182,6 @@ bool __no_inline_not_in_flash_func(gamate_psram_init)(void) {
         QMI_M0_WFMT_PREFIX_LEN_VALUE_8 << QMI_M0_WFMT_PREFIX_LEN_LSB;
     qmi_hw->m[1].wcmd = 0x38u;
 
-    qmi_hw->direct_csr = 0;
     hw_set_bits(&xip_ctrl_hw->ctrl, XIP_CTRL_WRITABLE_M1_BITS);
     restore_interrupts(ints);
 
@@ -198,6 +203,31 @@ void gamate_psram_reclock(void) {
         psram_set_timing();
 }
 
+void __no_inline_not_in_flash_func(gamate_psram_prepare_reset)(void) {
+    if (!psram_available)
+        return;
+
+    /* Run from SRAM, leave the external PSRAM in SPI mode, and make CS1
+     * explicitly inactive before the watchdog resets the QMI/XIP block. */
+    qmi_hw->direct_csr = 30u << QMI_DIRECT_CSR_CLKDIV_LSB |
+                         QMI_DIRECT_CSR_EN_BITS;
+    while (qmi_hw->direct_csr & QMI_DIRECT_CSR_BUSY_BITS)
+        ;
+
+    qmi_hw->direct_csr |= QMI_DIRECT_CSR_ASSERT_CS1N_BITS;
+    qmi_hw->direct_tx = QMI_DIRECT_TX_OE_BITS |
+                        (QMI_DIRECT_TX_IWIDTH_VALUE_Q << QMI_DIRECT_TX_IWIDTH_LSB) |
+                        0xF5u;
+    while (qmi_hw->direct_csr & QMI_DIRECT_CSR_BUSY_BITS)
+        ;
+    (void)qmi_hw->direct_rx;
+    qmi_hw->direct_csr &= ~QMI_DIRECT_CSR_ASSERT_CS1N_BITS;
+    while (qmi_hw->direct_csr & QMI_DIRECT_CSR_BUSY_BITS)
+        ;
+    qmi_hw->direct_csr = 0;
+    __dmb();
+}
+
 #else
 
 bool gamate_psram_init(void) {
@@ -213,6 +243,9 @@ size_t gamate_psram_size(void) {
 }
 
 void gamate_psram_reclock(void) {
+}
+
+void gamate_psram_prepare_reset(void) {
 }
 
 #endif

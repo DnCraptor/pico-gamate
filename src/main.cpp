@@ -225,9 +225,12 @@ __not_in_flash_func(process_kbd_report)(hid_keyboard_report_t const* report, hid
     
     if (altPressed && ctrlPressed && isInReport(report, HID_KEY_DELETE)) {
 #ifndef PICO_RP2040
-        /* Leave the overclocked operating point before watchdog reset.
-         * Lower the clock first while the high VREG voltage is still safe,
-         * then return VREG to the RP2350 nominal 1.10 V. */
+        /* From this point until reset nothing may start another PSRAM access. */
+        save_and_disable_interrupts();
+        gamate_psram_prepare_reset();
+
+        /* Lower clk_sys only after CS1 has been released.  The existing M0
+         * timing becomes more conservative when clk_sys is reduced. */
         set_sys_clock_khz(150000, false);
         vreg_set_voltage(VREG_VOLTAGE_1_10);
         sleep_ms(10);
@@ -1921,16 +1924,6 @@ byte Loop6502(M6502 *R) {
 
 int __time_critical_func(main)() {
     overclock();
-#if PICO_RP2350
-    if (gamate_psram_init() && gamate_psram_size() != 0)
-        ROM = (uint8_t *)GAMATE_PSRAM_BASE;
-#endif
-
-    sem_init(&vga_start_semaphore, 0, 1);
-    multicore_launch_core1(render_core);
-    sem_release(&vga_start_semaphore);
-
-
     gpio_init(PICO_DEFAULT_LED_PIN);
     gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
 
@@ -1940,6 +1933,14 @@ int __time_critical_func(main)() {
         sleep_ms(33);
         gpio_put(PICO_DEFAULT_LED_PIN, false);
     }
+#if PICO_RP2350
+    if (gamate_psram_init() && gamate_psram_size() != 0)
+        ROM = (uint8_t *)GAMATE_PSRAM_BASE;
+#endif
+
+    sem_init(&vga_start_semaphore, 0, 1);
+    multicore_launch_core1(render_core);
+    sem_release(&vga_start_semaphore);
 
     load_config();
     update_palette();
