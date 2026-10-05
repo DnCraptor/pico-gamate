@@ -289,8 +289,11 @@ typedef struct __attribute__((__packed__)) {
     char filename[79];
 } file_item_t;
 
-constexpr int max_files = 300;
-file_item_t * fileItems = (file_item_t *)(&SCREEN[0][0] + TEXTMODE_COLS*TEXTMODE_ROWS*2);
+constexpr size_t file_items_offset = TEXTMODE_COLS * TEXTMODE_ROWS * 2;
+static_assert(file_items_offset < sizeof(SCREEN), "text mode buffer exceeds SCREEN");
+constexpr int max_files = (sizeof(SCREEN) - file_items_offset) / sizeof(file_item_t);
+static_assert(max_files > 0, "SCREEN has no room for file browser entries");
+file_item_t * fileItems = (file_item_t *)(&SCREEN[0][0] + file_items_offset);
 
 int compareFileItems(const void* a, const void* b) {
     const auto* itemA = (file_item_t *)a;
