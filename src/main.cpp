@@ -1136,13 +1136,34 @@ static void replay_begin_frame() {
     }
 }
 
+static void replay_checkpoint() {
+    if (replay_mode != REPLAY_RECORD || !replay_file_open)
+        return;
+
+    const FSIZE_t end = f_tell(&replay_file);
+    UINT bytes_written = 0;
+    if (FR_OK != f_lseek(&replay_file, offsetof(replay_header_t, total_frames)) ||
+        FR_OK != f_write(&replay_file, &replay_frame, sizeof(replay_frame), &bytes_written) ||
+        bytes_written != sizeof(replay_frame) ||
+        FR_OK != f_lseek(&replay_file, end) ||
+        FR_OK != f_sync(&replay_file)) {
+        replay_stop();
+    }
+}
+
 static void replay_end_frame() {
     if (replay_mode == REPLAY_OFF)
         return;
     ++replay_frame;
-    if (replay_mode == REPLAY_PLAYBACK && replay_total_frames != 0 &&
-        replay_frame >= replay_total_frames)
+    if (replay_mode == REPLAY_RECORD) {
+        /* Keep a valid movie on disk even if the session ends with the emulator's
+         * Ctrl+Alt+Del watchdog reset. FatFs runs on the emulation core, so do
+         * this here rather than from the USB callback on the render core. */
+        if ((replay_frame % 60u) == 0)
+            replay_checkpoint();
+    } else if (replay_total_frames != 0 && replay_frame >= replay_total_frames) {
         replay_stop();
+    }
 }
 
 static replay_state_t replay_make_state() {

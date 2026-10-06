@@ -89,6 +89,13 @@ void InitAY() {
 };
 
 void __not_in_flash_func(SendAY)(uint16_t data) {
-    if (sm_AY595 >= 0)
-        pioAY595->txf[sm_AY595] = data << 16;
+    if (sm_AY595 < 0)
+        return;
+
+    /* A single AY register write expands to five SendAY() calls. The joined
+     * TX FIFO is only eight words deep, so bursty games can fill it. Preserve
+     * every AY bus phase instead of writing into a full FIFO. */
+    while (pio_sm_is_tx_fifo_full(pioAY595, sm_AY595))
+        tight_loop_contents();
+    pioAY595->txf[sm_AY595] = data << 16;
 }
