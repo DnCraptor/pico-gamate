@@ -175,6 +175,13 @@ static volatile bool palette_save_requested = false;
 static volatile bool palette_default_requested = false;
 static volatile bool filebrowser_toggle_requested = false;
 
+enum replay_start_mode_t : uint8_t {
+    REPLAY_START_NONE = 0,
+    REPLAY_START_RECORD,
+    REPLAY_START_PLAYBACK
+};
+static replay_start_mode_t replay_start_mode = REPLAY_START_NONE;
+
 void
 __not_in_flash_func(process_kbd_report)(hid_keyboard_report_t const* report, hid_keyboard_report_t const* prev_report) {
     /* printf("HID key report modifiers %2.2X report ", report->modifier);
@@ -779,8 +786,12 @@ void filebrowser(const char pathname[256], const char executables[11]) {
                 if (file_at_cursor.is_executable) {
                     sprintf(tmp, "%s\\%s", basepath, file_at_cursor.filename);
 
+                    replay_start_mode = altPressed ? REPLAY_START_RECORD
+                                      : ctrlPressed ? REPLAY_START_PLAYBACK
+                                                    : REPLAY_START_NONE;
                     if (filebrowser_loadfile(tmp))
                         return;
+                    replay_start_mode = REPLAY_START_NONE;
                     debounce = false;
                 }
             }
@@ -902,6 +913,277 @@ bool __not_in_flash_func(overclock)() {
     return res;
 }
 
+static constexpr uint32_t REPLAY_MAGIC = 0x31524D47u; /* GMR1 */
+static constexpr uint32_t REPLAY_STATE_MAGIC = 0x31534D47u; /* GMS1 */
+
+typedef struct __attribute__((packed)) replay_header_s {
+    uint32_t magic;
+    uint16_t version;
+    uint16_t header_size;
+    uint32_t rom_size;
+    uint64_t session_id;
+    uint32_t total_frames;
+    char rom_name[80];
+} replay_header_t;
+
+typedef struct __attribute__((packed)) replay_event_s {
+    uint32_t frame;
+    uint8_t keyboard;
+    uint8_t gamepad1;
+    uint8_t gamepad2;
+} replay_event_t;
+
+typedef struct __attribute__((packed)) replay_state_s {
+    uint32_t magic;
+    uint64_t session_id;
+    uint32_t frame;
+    uint32_t file_offset;
+    uint8_t keyboard;
+    uint8_t gamepad1;
+    uint8_t gamepad2;
+    uint8_t reserved;
+} replay_state_t;
+
+enum replay_mode_t : uint8_t { REPLAY_OFF = 0, REPLAY_RECORD, REPLAY_PLAYBACK };
+static replay_mode_t replay_mode = REPLAY_OFF;
+static FIL replay_file;
+static bool replay_file_open = false;
+static uint64_t replay_session_id = 0;
+static uint32_t replay_frame = 0;
+static uint32_t replay_total_frames = 0;
+static uint8_t replay_input = 0;
+static uint8_t replay_keyboard = 0;
+static uint8_t replay_gamepad1 = 0;
+static uint8_t replay_gamepad2 = 0;
+static uint8_t replay_last_keyboard = 0xff;
+static uint8_t replay_last_gamepad1 = 0xff;
+static uint8_t replay_last_gamepad2 = 0xff;
+static bool replay_ignore_launch_enter = false;
+static replay_event_t replay_next_event = {};
+static bool replay_have_next_event = false;
+
+static uint8_t input_bits_mask(const input_bits_t &bits) {
+    uint8_t input = 0;
+    if (bits.up) input |= 0x01;
+    if (bits.down) input |= 0x02;
+    if (bits.left) input |= 0x04;
+    if (bits.right) input |= 0x08;
+    if (bits.a) input |= 0x10;
+    if (bits.b) input |= 0x20;
+    if (bits.start) input |= 0x40;
+    if (bits.select) input |= 0x80;
+    return input;
+}
+
+static void replay_sample_inputs(uint8_t &kbd, uint8_t &pad1, uint8_t &pad2) {
+    kbd = input_bits_mask(keyboard.bits);
+    pad1 = input_bits_mask(gamepad1_bits);
+    pad2 = input_bits_mask(gamepad2_bits);
+
+    /* Alt+Enter is a file-browser command, not the first START press of the
+     * movie. Suppress that held keyboard Enter until it is released. */
+    if (replay_ignore_launch_enter) {
+        if (keyboard.bits.start) {
+            kbd &= (uint8_t)~0x40u;
+            pad1 &= (uint8_t)~0x40u;
+        } else {
+            replay_ignore_launch_enter = false;
+        }
+    }
+}
+
+static uint8_t replay_combined_input() {
+    return replay_keyboard | replay_gamepad1 | replay_gamepad2;
+}
+
+static void replay_path(char *pathname, size_t size) {
+    snprintf(pathname, size, "/.config/gamate/replay/%s.gmr", filename);
+}
+
+static void replay_mkdirs() {
+    f_mkdir("/.config");
+    f_mkdir("/.config/gamate");
+    f_mkdir("/.config/gamate/replay");
+}
+
+static void replay_stop() {
+    if (replay_file_open) {
+        if (replay_mode == REPLAY_RECORD) {
+            const FSIZE_t end = f_tell(&replay_file);
+            UINT bytes_written = 0;
+            f_lseek(&replay_file, 20);
+            f_write(&replay_file, &replay_frame, sizeof(replay_frame), &bytes_written);
+            f_lseek(&replay_file, end);
+            f_sync(&replay_file);
+        }
+        f_close(&replay_file);
+    }
+    replay_file_open = false;
+    replay_mode = REPLAY_OFF;
+    replay_have_next_event = false;
+}
+
+static bool replay_read_next() {
+    UINT bytes_read = 0;
+    replay_have_next_event = false;
+    if (!replay_file_open || replay_mode != REPLAY_PLAYBACK)
+        return false;
+    if (FR_OK == f_read(&replay_file, &replay_next_event, sizeof(replay_next_event), &bytes_read) &&
+        bytes_read == sizeof(replay_next_event)) {
+        replay_have_next_event = true;
+        return true;
+    }
+    return false;
+}
+
+static bool replay_start_recording() {
+    replay_stop();
+    if (FR_OK != f_mount(&fs, "", 1))
+        return false;
+    replay_mkdirs();
+    char pathname[256];
+    replay_path(pathname, sizeof(pathname));
+    if (FR_OK != f_open(&replay_file, pathname, FA_CREATE_ALWAYS | FA_WRITE))
+        return false;
+
+    replay_header_t header = {};
+    header.magic = REPLAY_MAGIC;
+    header.version = 2;
+    header.header_size = sizeof(header);
+    header.rom_size = rom_size;
+    header.session_id = time_us_64();
+    strncpy(header.rom_name, filename, sizeof(header.rom_name) - 1);
+    UINT bytes_written = 0;
+    if (FR_OK != f_write(&replay_file, &header, sizeof(header), &bytes_written) || bytes_written != sizeof(header)) {
+        f_close(&replay_file);
+        return false;
+    }
+    f_sync(&replay_file);
+    replay_file_open = true;
+    replay_mode = REPLAY_RECORD;
+    replay_session_id = header.session_id;
+    replay_frame = 0;
+    replay_total_frames = 0;
+    replay_input = 0;
+    replay_keyboard = replay_gamepad1 = replay_gamepad2 = 0;
+    replay_last_keyboard = replay_last_gamepad1 = replay_last_gamepad2 = 0xff;
+    replay_ignore_launch_enter = keyboard.bits.start;
+    return true;
+}
+
+static bool replay_start_playback() {
+    replay_stop();
+    if (FR_OK != f_mount(&fs, "", 1))
+        return false;
+    char pathname[256];
+    replay_path(pathname, sizeof(pathname));
+    if (FR_OK != f_open(&replay_file, pathname, FA_READ))
+        return false;
+
+    replay_header_t header = {};
+    UINT bytes_read = 0;
+    if (FR_OK != f_read(&replay_file, &header, sizeof(header), &bytes_read) ||
+        bytes_read != sizeof(header) || header.magic != REPLAY_MAGIC || header.version != 2 ||
+        header.header_size != sizeof(header) || header.rom_size != rom_size ||
+        strncmp(header.rom_name, filename, sizeof(header.rom_name)) != 0) {
+        f_close(&replay_file);
+        return false;
+    }
+    replay_file_open = true;
+    replay_mode = REPLAY_PLAYBACK;
+    replay_session_id = header.session_id;
+    replay_frame = 0;
+    replay_total_frames = header.total_frames;
+    replay_input = 0;
+    replay_keyboard = replay_gamepad1 = replay_gamepad2 = 0;
+    replay_ignore_launch_enter = false;
+    replay_read_next();
+    return true;
+}
+
+static void replay_begin_frame() {
+    if (replay_mode == REPLAY_RECORD) {
+        replay_sample_inputs(replay_keyboard, replay_gamepad1, replay_gamepad2);
+        replay_input = replay_combined_input();
+        if (replay_keyboard != replay_last_keyboard ||
+            replay_gamepad1 != replay_last_gamepad1 ||
+            replay_gamepad2 != replay_last_gamepad2) {
+            replay_event_t event = { replay_frame, replay_keyboard, replay_gamepad1, replay_gamepad2 };
+            UINT bytes_written = 0;
+            if (FR_OK != f_write(&replay_file, &event, sizeof(event), &bytes_written) ||
+                bytes_written != sizeof(event)) {
+                replay_stop();
+                return;
+            }
+            replay_last_keyboard = replay_keyboard;
+            replay_last_gamepad1 = replay_gamepad1;
+            replay_last_gamepad2 = replay_gamepad2;
+        }
+    } else if (replay_mode == REPLAY_PLAYBACK) {
+        while (replay_have_next_event && replay_next_event.frame == replay_frame) {
+            replay_keyboard = replay_next_event.keyboard;
+            replay_gamepad1 = replay_next_event.gamepad1;
+            replay_gamepad2 = replay_next_event.gamepad2;
+            replay_input = replay_combined_input();
+            replay_read_next();
+        }
+        if (replay_have_next_event && replay_next_event.frame < replay_frame)
+            replay_stop();
+    } else {
+        uint8_t kbd, pad1, pad2;
+        replay_sample_inputs(kbd, pad1, pad2);
+        replay_input = kbd | pad1 | pad2;
+    }
+}
+
+static void replay_end_frame() {
+    if (replay_mode == REPLAY_OFF)
+        return;
+    ++replay_frame;
+    if (replay_mode == REPLAY_PLAYBACK && replay_total_frames != 0 &&
+        replay_frame >= replay_total_frames)
+        replay_stop();
+}
+
+static replay_state_t replay_make_state() {
+    replay_state_t state = {};
+    if (replay_mode == REPLAY_RECORD && replay_file_open) {
+        f_sync(&replay_file);
+        state.magic = REPLAY_STATE_MAGIC;
+        state.session_id = replay_session_id;
+        state.frame = replay_frame;
+        state.file_offset = (uint32_t)f_tell(&replay_file);
+        state.keyboard = replay_keyboard;
+        state.gamepad1 = replay_gamepad1;
+        state.gamepad2 = replay_gamepad2;
+    }
+    return state;
+}
+
+static void replay_restore_state(const replay_state_t &state) {
+    if (replay_mode != REPLAY_RECORD || !replay_file_open)
+        return;
+    if (state.magic != REPLAY_STATE_MAGIC || state.session_id != replay_session_id ||
+        state.file_offset < sizeof(replay_header_t)) {
+        replay_stop();
+        return;
+    }
+    if (FR_OK != f_lseek(&replay_file, state.file_offset) || FR_OK != f_truncate(&replay_file)) {
+        replay_stop();
+        return;
+    }
+    f_sync(&replay_file);
+    replay_frame = state.frame;
+    replay_keyboard = state.keyboard;
+    replay_gamepad1 = state.gamepad1;
+    replay_gamepad2 = state.gamepad2;
+    replay_input = replay_combined_input();
+    replay_last_keyboard = state.keyboard;
+    replay_last_gamepad1 = state.gamepad1;
+    replay_last_gamepad2 = state.gamepad2;
+    replay_ignore_launch_enter = false;
+}
+
 bool save() {
     int tmp_data[8];
     char pathname[255];
@@ -928,6 +1210,9 @@ bool save() {
 
     f_write(&fd, &bank0_offset, 4, &bytes_writen);
     f_write(&fd, &bank1_offset, 4, &bytes_writen);
+
+    const replay_state_t replay_state = replay_make_state();
+    f_write(&fd, &replay_state, sizeof(replay_state), &bytes_writen);
 
     f_close(&fd);
 #endif
@@ -961,8 +1246,14 @@ bool load() {
     f_read(&fd, &bank0_offset, 4, &bytes_read);
     f_read(&fd, &bank1_offset, 4, &bytes_read);
 
+    replay_state_t replay_state = {};
+    f_read(&fd, &replay_state, sizeof(replay_state), &bytes_read);
 
     vdp_loadstate(tmp_data);
+    if (bytes_read == sizeof(replay_state))
+        replay_restore_state(replay_state);
+    else if (replay_mode == REPLAY_RECORD)
+        replay_stop();
 
     f_close(&fd);
 
@@ -1856,16 +2147,7 @@ extern "C" uint8_t __time_critical_func(Rd6502)(uint16_t address) {
 
     // INPUT
     if (address == 0x4400) {
-        uint8_t buttons = 0xff;
-        if (gamepad1_bits.up) buttons ^= 0b1;
-        if (gamepad1_bits.down) buttons ^= 0b10;
-        if (gamepad1_bits.left) buttons ^= 0b100;
-        if (gamepad1_bits.right) buttons ^= 0b1000;
-        if (gamepad1_bits.a) buttons ^= 0b10000;
-        if (gamepad1_bits.b) buttons ^= 0b100000;
-        if (gamepad1_bits.start) buttons ^= 0b1000000;
-        if (gamepad1_bits.select) buttons ^= 0b10000000;
-        return buttons;
+        return (uint8_t)~replay_input;
     }
 
     if (address == 0x4800) {
@@ -2028,6 +2310,14 @@ int __time_critical_func(main)() {
         Reset6502(&cpu);
         cpu.IPeriod = 32768;
 
+        if (replay_start_mode == REPLAY_START_RECORD)
+            replay_start_recording();
+        else if (replay_start_mode == REPLAY_START_PLAYBACK)
+            replay_start_playback();
+        else
+            replay_stop();
+        replay_start_mode = REPLAY_START_NONE;
+
         while (!reboot) {
             handle_palette_hotkeys();
 
@@ -2126,6 +2416,8 @@ int __time_critical_func(main)() {
                     save();
                 }
             }
+            replay_begin_frame();
+
             Run6502(&cpu); Int6502(&cpu, INT_IRQ); // There's a timer that fires
             cpu.IPeriod = 32768;                   // an IRQ every
             Run6502(&cpu); Int6502(&cpu, INT_IRQ); // 32768 clocks (approx. 135.28Hz).
@@ -2133,6 +2425,7 @@ int __time_critical_func(main)() {
             cpu.IPeriod = 7364;
             Run6502(&cpu);
             screen_update((uint8_t *)SCREEN, settings.ghosting); // It takes exactly 72900 clocks at 4.433MHz per frame.
+            replay_end_frame();
 
             if (demo_active) {
                 gamate_demo_title_visible = settings.demo_name && gamate_demo_title_width != 0 &&
