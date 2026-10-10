@@ -174,6 +174,9 @@ static volatile bool palette_random_persist_requested = false;
 static volatile bool palette_save_requested = false;
 static volatile bool palette_default_requested = false;
 static volatile bool filebrowser_toggle_requested = false;
+static volatile bool browser_active = false;
+static volatile bool browser_record_requested = false;
+static volatile bool browser_play_requested = false;
 
 enum replay_start_mode_t : uint8_t {
     REPLAY_START_NONE = 0,
@@ -206,6 +209,12 @@ __not_in_flash_func(process_kbd_report)(hid_keyboard_report_t const* report, hid
     else if ( isInReport(report, HID_KEY_D)) h_code = 13;
     else if ( isInReport(report, HID_KEY_E)) h_code = 14;
     else if ( isInReport(report, HID_KEY_F)) h_code = 15;
+    if (browser_active) {
+        if (isInReport(report, HID_KEY_R) && !isInReport(prev_report, HID_KEY_R))
+            browser_record_requested = true;
+        if (isInReport(report, HID_KEY_P) && !isInReport(prev_report, HID_KEY_P))
+            browser_play_requested = true;
+    }
     keyboard.h_code = h_code;
     keyboard.bits.start = isInReport(report, HID_KEY_ENTER) || isInReport(report, HID_KEY_KEYPAD_ENTER);
     keyboard.bits.select = isInReport(report, HID_KEY_BACKSPACE) || isInReport(report, HID_KEY_ESCAPE) || isInReport(report, HID_KEY_KEYPAD_ADD);
@@ -591,6 +600,9 @@ static bool demo_load_next_rom(const char *after_name) {
 }
 
 void filebrowser(const char pathname[256], const char executables[11]) {
+    browser_active = true;
+    browser_record_requested = false;
+    browser_play_requested = false;
     bool debounce = true;
     bool demo_debounce = false;
     char basepath[256];
@@ -679,6 +691,7 @@ void filebrowser(const char pathname[256], const char executables[11]) {
 
             if (filebrowser_toggle_requested) {
                 filebrowser_toggle_requested = false;
+                browser_active = false;
                 return;
             }
 
@@ -688,13 +701,15 @@ void filebrowser(const char pathname[256], const char executables[11]) {
 
             if (!gamepad1_bits.b)
                 demo_debounce = true;
-            if (demo_debounce && gamepad1_bits.b) {
+            if (demo_debounce && gamepad1_bits.b && !browser_record_requested && !browser_play_requested) {
                 demo_requested = true;
+                browser_active = false;
                 return;
             }
 
             // ESCAPE / run previous ROM
-            if (gamepad1_bits.select) {
+            if (gamepad1_bits.select && !browser_record_requested && !browser_play_requested) {
+                browser_active = false;
                 return;
             }
 
@@ -765,7 +780,11 @@ void filebrowser(const char pathname[256], const char executables[11]) {
                 }
             }
 
-            if (debounce && gamepad1_bits.start) {
+            const bool record_command = browser_record_requested;
+            const bool play_command = browser_play_requested;
+            browser_record_requested = false;
+            browser_play_requested = false;
+            if ((debounce && gamepad1_bits.start) || record_command || play_command) {
                 auto file_at_cursor = fileItems[offset + current_item];
 
                 if (file_at_cursor.is_directory) {
@@ -786,11 +805,14 @@ void filebrowser(const char pathname[256], const char executables[11]) {
                 if (file_at_cursor.is_executable) {
                     sprintf(tmp, "%s\\%s", basepath, file_at_cursor.filename);
 
-                    replay_start_mode = altPressed ? REPLAY_START_RECORD
+                    replay_start_mode = record_command ? REPLAY_START_RECORD
+                                      : play_command ? REPLAY_START_PLAYBACK
+                                      : altPressed ? REPLAY_START_RECORD
                                       : ctrlPressed ? REPLAY_START_PLAYBACK
                                                     : REPLAY_START_NONE;
                     if (filebrowser_loadfile(tmp))
-                        return;
+                        browser_active = false;
+                return;
                     replay_start_mode = REPLAY_START_NONE;
                     debounce = false;
                 }
@@ -996,6 +1018,38 @@ static uint8_t replay_combined_input() {
     return replay_keyboard | replay_gamepad1 | replay_gamepad2;
 }
 
+static void replay_update_rec_osd() {
+    static uint32_t last_second = UINT32_MAX;
+    if (replay_mode != REPLAY_RECORD) {
+        last_second = UINT32_MAX;
+        return;
+    }
+    const uint32_t second = replay_frame / 60u;
+    if (second != last_second) {
+        last_second = second;
+        char label[32];
+        snprintf(label, sizeof(label), "REC %02lu:%02lu:%02lu",
+                 (unsigned long)(second / 3600u),
+                 (unsigned long)((second / 60u) % 60u),
+                 (unsigned long)(second % 60u));
+        memset(gamate_demo_title_bitmap, 0, sizeof(gamate_demo_title_bitmap));
+        const size_t len = strlen(label);
+        gamate_demo_title_width = (uint16_t)(len * 6);
+        for (size_t c = 0; c < len; ++c) {
+            const uint8_t *glyph = &font_6x8[(uint8_t)label[c] * 8];
+            for (int gy = 0; gy < 8; ++gy) {
+                uint8_t bits = glyph[gy];
+                uint8_t *dst = &gamate_demo_title_bitmap[gy][c * 6];
+                for (int gx = 0; gx < 6; ++gx) {
+                    dst[gx] = bits & 1u;
+                    bits >>= 1;
+                }
+            }
+        }
+    }
+    gamate_demo_title_visible = true;
+}
+
 static void replay_path(char *pathname, size_t size) {
     snprintf(pathname, size, "/.config/gamate/replay/%s.gmr", filename);
 }
@@ -1021,6 +1075,7 @@ static void replay_stop() {
     replay_file_open = false;
     replay_mode = REPLAY_OFF;
     replay_have_next_event = false;
+    if (!demo_active) gamate_demo_title_visible = false;
 }
 
 static bool replay_read_next() {
@@ -1169,7 +1224,6 @@ static void replay_end_frame() {
 static replay_state_t replay_make_state() {
     replay_state_t state = {};
     if (replay_mode == REPLAY_RECORD && replay_file_open) {
-        f_sync(&replay_file);
         state.magic = REPLAY_STATE_MAGIC;
         state.session_id = replay_session_id;
         state.frame = replay_frame;
@@ -1199,9 +1253,9 @@ static void replay_restore_state(const replay_state_t &state) {
     replay_gamepad1 = state.gamepad1;
     replay_gamepad2 = state.gamepad2;
     replay_input = replay_combined_input();
-    replay_last_keyboard = state.keyboard;
-    replay_last_gamepad1 = state.gamepad1;
-    replay_last_gamepad2 = state.gamepad2;
+    replay_last_keyboard = 0xff;
+    replay_last_gamepad1 = 0xff;
+    replay_last_gamepad2 = 0xff;
     replay_ignore_launch_enter = false;
 }
 
@@ -1210,15 +1264,24 @@ bool save() {
     char pathname[255];
 #if 1
     if (settings.save_slot > 0) {
-        sprintf(pathname, "%s\\%s_%d.save",  HOME_DIR, filename, settings.save_slot);
+        snprintf(pathname, sizeof(pathname), "/.config/gamate/%s_%d.save", filename, settings.save_slot);
     }
     else {
-        sprintf(pathname, "%s\\%s.save",  HOME_DIR, filename);
+        snprintf(pathname, sizeof(pathname), "/.config/gamate/%s.save", filename);
     }
 
-    FRESULT fr = f_mount(&fs, "", 1);
+    /* Finish replay metadata and flush the movie BEFORE opening the state
+     * file.  FatFs/SD backend must not be asked to sync one open file while
+     * another file is being created/written.  Saving is not a replay stop. */
+    if (replay_mode == REPLAY_RECORD)
+        replay_checkpoint();
+    const replay_state_t replay_state = replay_make_state();
+
+    f_mkdir("/.config");
+    f_mkdir("/.config/gamate");
     FIL fd;
-    fr = f_open(&fd, pathname, FA_CREATE_ALWAYS | FA_WRITE);
+    FRESULT fr = f_open(&fd, pathname, FA_CREATE_ALWAYS | FA_WRITE);
+    if (fr != FR_OK) return false;
     UINT bytes_writen;
 
     f_write(&fd, RAM, sizeof(RAM), &bytes_writen);
@@ -1232,7 +1295,6 @@ bool save() {
     f_write(&fd, &bank0_offset, 4, &bytes_writen);
     f_write(&fd, &bank1_offset, 4, &bytes_writen);
 
-    const replay_state_t replay_state = replay_make_state();
     f_write(&fd, &replay_state, sizeof(replay_state), &bytes_writen);
 
     f_close(&fd);
@@ -1246,15 +1308,15 @@ bool load() {
 #if 1
 
     if (settings.save_slot > 0) {
-        sprintf(pathname, "%s\\%s_%d.save",  HOME_DIR, filename, settings.save_slot);
+        snprintf(pathname, sizeof(pathname), "/.config/gamate/%s_%d.save", filename, settings.save_slot);
     }
     else {
-        sprintf(pathname, "%s\\%s.save",  HOME_DIR, filename);
+        snprintf(pathname, sizeof(pathname), "/.config/gamate/%s.save", filename);
     }
 
-    FRESULT fr = f_mount(&fs, "", 1);
     FIL fd;
-    fr = f_open(&fd, pathname, FA_READ);
+    FRESULT fr = f_open(&fd, pathname, FA_READ);
+    if (fr != FR_OK) return false;
     UINT bytes_read;
 
     f_read(&fd, RAM, sizeof(RAM), &bytes_read);
@@ -2419,24 +2481,29 @@ int __time_critical_func(main)() {
 #endif
             }
 
-            if (fxPressedV) {
-                // Quick-state takes ownership of the current game. Stop Demo
-                // before either saving or loading so it cannot switch ROMs later.
-                demo_active = false;
-                demo_requested = false;
-                demo_advance_pending = false;
-                demo_game_started_at = 0;
-                demo_title_until = 0;
-                gamate_demo_title_visible = false;
-            gamate_demo_countdown_visible = false;
+            static uint8_t last_quick_slot = 0;
+            const uint8_t quick_slot = fxPressedV;
+            if (quick_slot && quick_slot != last_quick_slot) {
+                // Quick-state leaves recording intact. Only cancel Demo if
+                // this actually is a Demo session.
+                if (demo_active) {
+                    demo_active = false;
+                    demo_requested = false;
+                    demo_advance_pending = false;
+                    demo_game_started_at = 0;
+                    demo_title_until = 0;
+                    gamate_demo_title_visible = false;
+                    gamate_demo_countdown_visible = false;
+                }
                 if (altPressed) {
-                    settings.save_slot = fxPressedV;
+                    settings.save_slot = quick_slot;
                     load();
                 } else if (ctrlPressed) {
-                    settings.save_slot = fxPressedV;
+                    settings.save_slot = quick_slot;
                     save();
                 }
             }
+            last_quick_slot = quick_slot;
             replay_begin_frame();
 
             Run6502(&cpu); Int6502(&cpu, INT_IRQ); // There's a timer that fires
@@ -2447,6 +2514,7 @@ int __time_critical_func(main)() {
             Run6502(&cpu);
             screen_update((uint8_t *)SCREEN, settings.ghosting); // It takes exactly 72900 clocks at 4.433MHz per frame.
             replay_end_frame();
+            replay_update_rec_osd();
 
             if (demo_active) {
                 gamate_demo_title_visible = settings.demo_name && gamate_demo_title_width != 0 &&
