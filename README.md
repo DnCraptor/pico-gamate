@@ -7,7 +7,7 @@ and compatible boards.**
 RP2350-class hardware and provides several video and audio backends
 intended for MURMULATOR-style retro-computer hardware.
 
-Current version: **3.0.8**
+Current version: **3.1.2**
 
 ## Current target
 
@@ -42,6 +42,9 @@ uses the `m1` firmware prefix.
 -   configurable display scaling and gray-line effects on supported
     digital/RGB modes
 -   persistent emulator settings
+-   per-game palette presets and random custom palettes
+-   input recording and playback by emulated frame (`.gmr`)
+-   save-state-linked recording timelines with rewind and branching
 
 ## Video output
 
@@ -129,8 +132,10 @@ Available game durations:
 -   5 minutes
 -   10 minutes
 
-While a cartridge is started in Demo mode, its name is displayed in a
-strip along the bottom of the screen.
+Demo mode shows a countdown of the remaining time for the current game.
+The cartridge name can also appear in the bottom title strip; the **Demo
+name OSD** setting controls whether that name is shown, independently of
+the countdown.
 
 If a cartridge cannot be loaded, Demo mode briefly shows the error, skips
 that cartridge, and continues with the next one. Entering the cartridge
@@ -139,23 +144,104 @@ cannot leave Demo mode latched.
 
 Demo mode can be started from the emulator menu.
 
-## Cartridge browser navigation
+## Cartridge browser controls
 
-Keyboard `PageUp` and `PageDown` move the current selection by half of the
-visible page. The cursor moves first; the list viewport scrolls only when
-the new selection would otherwise fall outside the visible area.
+Select a `.bin` cartridge and use the following keyboard commands:
+
+-   **Enter / Start:** load and run the selected cartridge normally.
+-   **R:** load the selected cartridge and start a new recording.
+-   **P:** load the selected cartridge and play its saved recording.
+-   **B:** start Demo mode (unchanged).
+-   **PageUp / PageDown:** move the selection by half a visible page.
+-   **F10:** open the cartridge browser while a game is running; returning
+    without selecting another cartridge resumes the current game.
+
+The cursor moves before the viewport scrolls. The normal in-game mapping
+of keyboard `P` to button `B` remains in effect outside the browser.
+
+## Input recording and playback
+
+The **R** and **P** commands operate on recordings stored in:
+
+```text
+/.config/gamate/replay/<rom-filename>.gmr
+```
+
+A new recording replaces the previous `.gmr` for that cartridge. Playback
+checks the ROM name and size against the recording header. The current
+recording format is **version 2**; older version-1 recordings do not have
+all three input sources and are not accepted by this version.
+
+Recording stores changes in the keyboard, first-controller and
+second-controller input masks, each indexed by **emulated frame** rather
+than wall-clock time. During playback, the saved events drive the emulated
+Gamate input instead of live gameplay input. After the recorded end, live
+input resumes. Menu and emulator keyboard shortcuts remain available.
+
+The existing title OSD displays `REC HH:MM:SS` only while recording. The
+timer uses emulated frames at 60 frames per displayed second. Playback does
+not add a `PLAY` label; Demo mode keeps its countdown and optional title.
+
+Every 60 emulated frames, the recording header is checkpointed and the
+file synchronized to the SD card. A normal recording stop also finalizes
+the file. An abrupt reset or loss of power may still lose events since the
+last successful checkpoint.
+
+## Save states and replay timeline
+
+From the keyboard, use **Ctrl+F1** through **Ctrl+F8** to quick-save and
+**Alt+F1** through **Alt+F8** to quick-load the corresponding slot.
+The menu also provides save-state operations.
+
+Save states are stored in `/.config/gamate/` rather than the cartridge
+folder `/GAMATE/`. Slot zero uses `<rom-filename>.save`; numbered slots use
+`<rom-filename>_<slot>.save`. Previously saved states in `/GAMATE/` must
+be moved manually to the new directory if they are still needed.
+
+During recording, a save state also stores the recording session ID,
+emulated frame, file offset and source input state. Loading a state from
+**the same recording session** restores the recording position and
+truncates the abandoned future of the `.gmr` file so play can continue
+along a new branch. Quick-save does not stop recording or clear `REC`.
+Older save-state files without a matching replay trailer can still hold
+normal emulation state, but cannot resume the current recording timeline.
+Quick-save/load does not remount FatFs while a movie file is open.
+
+## Emulator keyboard shortcuts
+
+-   **F6:** generate a random custom palette for the running game.
+-   **F7:** generate a random custom palette and save the emulator settings.
+-   **F8:** save the current game's palette as its `.ini` preset.
+-   **F9:** restore the default palette.
+-   **F10:** open/close the cartridge browser.
+-   **Ctrl+Alt+Delete:** reset the system.
+
+These F6-F10 actions use the keys without Ctrl or Alt. The quick-state
+shortcuts above use Ctrl or Alt together with an F1-F8 key.
+
+## SD-card layout
+
+```text
+/GAMATE/<game>.bin                            Cartridge ROM
+/.config/gamate/<game>.bin.save               Save state (slot 0)
+/.config/gamate/<game>.bin_1.save             Save state (slot 1)
+/.config/gamate/replay/<game>.bin.gmr          Input recording
+/.config/gamate/<game>.ini                    Per-game palette preset
+/.config/gamate/<platform>/<video>/emulator.cfg   Emulator settings
+```
+
+The program creates the necessary configuration and recording directories
+when writing data. The ROM browser still reads `/GAMATE/`.
 
 ## Configuration format
 
-The current settings format is version 3. Demo duration and the TV-SOFT
-`Colors` option are persistent. Configuration loading is strict: only the
-current structure size and version are accepted. Configuration writes are
-considered successful only when the complete settings block is written and
-the file closes successfully.
-
-Version-1 and version-2 configuration files are therefore not interpreted
-as current version-3 settings; current defaults are used until settings are
-saved again.
+The current settings format is **version 5**. It includes Demo duration,
+TV-SOFT `Colors`, custom palette presets, and the optional Demo title OSD.
+Version-4 settings are migrated on load with the new Demo-name option
+enabled by default. Older formats and invalid or unexpectedly sized
+settings files fall back to defaults. Settings are stored separately for
+each platform and video backend; a complete write and successful file close
+are required when saving them.
 
 ## Building
 
@@ -177,8 +263,8 @@ HWAY
 Only one video backend and one audio configuration should be selected
 for a release build.
 
-The checked-in default CMake selection for 3.0.8 is MURMULATOR 2 with HDMI
-enabled; `build_all.bat` still produces the full 48-configuration release
+The checked-in default CMake selection for 3.1.2 is MURMULATOR 2 with HDMI
+enabled; `build-all-rp2350.bat` still produces the full 48-configuration release
 matrix described below.
 
 Example configuration:
@@ -197,7 +283,7 @@ cmake --build build\m1-vga-pwm
 
 ### Build all release configurations
 
-`build_all.bat` builds the supported RP2350/Cortex-M33 release matrix:
+`build-all-rp2350.bat` builds the supported RP2350/Cortex-M33 release matrix:
 
 -   boards: `murmulator`, `murmulator2`, `olimex-pico-pc`,
     `waveshare_rp2350_pizero`
@@ -228,10 +314,10 @@ bin/Release/
 Examples:
 
 ``` text
-m1p2-gamate-VGA-PWM-3.0.8.uf2
-m2p2-gamate-HDMI-I2S-3.0.8.uf2
-PCp2-gamate-VGA-AY-3-8910-3.0.8.uf2
-z0p2-gamate-TV-SOFT-I2S-3.0.8.uf2
+m1p2-gamate-VGA-PWM-3.1.2.uf2
+m2p2-gamate-HDMI-I2S-3.1.2.uf2
+PCp2-gamate-VGA-AY-3-8910-3.1.2.uf2
+z0p2-gamate-TV-SOFT-I2S-3.1.2.uf2
 ```
 
 ### Video suffix
