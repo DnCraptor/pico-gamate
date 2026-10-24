@@ -1,42 +1,40 @@
 #pragma GCC optimize("Ofast")
 
-#ifdef PICO_RP2350
-#include <hardware/regs/qmi.h>
-#include <hardware/structs/qmi.h>
-#endif
-
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <signal.h>
+#include <pthread.h>
 #include <pico.h>
-#include <pico/stdlib.h>
-#include <pico/multicore.h>
-#include <hardware/clocks.h>
-#include <hardware/vreg.h>
-#include <hardware/flash.h>
-#include <hardware/watchdog.h>
 
 #include <graphics.h>
-#include "audio.h"
 #include "main.h"
-#include "psram.h"
 
 #include "nespad.h"
 #include "ff.h"
-#include "ps2kbd_mrmltr.h"
+#include "hid_keys.h"
+
+#include "audio_linux.h"
+#include "input_linux.h"
+#include "kbd_linux.h"
+#include "platform_linux.h"
+#include "video_drm.h"
 
 #include "m6502/m6502.h"
 #include "gamate/vdp.h"
 #include "gamate/bios.h"
 #include "emu2149/emu2149.h"
-#include "hway/AY_PIO_595.h"
 
 #define HOME_DIR "\\GAMATE"
-extern char __flash_binary_end;
-#define FLASH_TARGET_OFFSET (((((uintptr_t)&__flash_binary_end - XIP_BASE) / FLASH_SECTOR_SIZE) + 4) * FLASH_SECTOR_SIZE)
-static const uintptr_t rom = XIP_BASE + FLASH_TARGET_OFFSET;
 
+/* Cartridge space.  On the RP2350 the ROM is read from flash or PSRAM,
+ * where the 0x6000/0xA000 bank windows may reach past the loaded file
+ * (bank register 0..255, 16 KiB banks) and read erased memory.  The host
+ * buffer covers that whole reach, filled with 0xFF like erased flash. */
+static constexpr uint32_t ROM_SPACE_SIZE = 256u * 0x4000u;
+static uint8_t rom_space[ROM_SPACE_SIZE];
 
-uint8_t * ROM = (uint8_t *) rom;
+uint8_t * ROM = rom_space;
 
 alignas(4) uint8_t RAM[1024] = { 0xFF };
 extern uint8_t VRAM[16384];
@@ -57,7 +55,6 @@ static uint32_t game_load_generation = 0;
 static FATFS fs;
 bool reboot = false;
 bool limit_fps = true;
-semaphore vga_start_semaphore;
 
 uint8_t SCREEN[150][160];
 
@@ -240,23 +237,12 @@ __not_in_flash_func(process_kbd_report)(hid_keyboard_report_t const* report, hid
         pageDownPressed = true;
     
     if (altPressed && ctrlPressed && isInReport(report, HID_KEY_DELETE)) {
-#ifndef PICO_RP2040
-        /* From this point until reset nothing may start another PSRAM access. */
-        save_and_disable_interrupts();
-        gamate_psram_prepare_reset();
-
-        /* Lower clk_sys only after CS1 has been released.  The existing M0
-         * timing becomes more conservative when clk_sys is reduced. */
-        set_sys_clock_khz(150000, false);
-        vreg_set_voltage(VREG_VOLTAGE_1_10);
-        sleep_ms(10);
-#else
-        set_sys_clock_khz(125000, false);
-#endif
-        watchdog_enable(10, true);
-        while(true) {
-            tight_loop_contents();
-        }
+        /* RP2350: watchdog reset.  Linux: the render thread restarts the
+         * emulator process after the current frame. */
+        platform_request(PLATFORM_REBOOT);
+    }
+    if (altPressed && ctrlPressed && isInReport(report, HID_KEY_END)) {
+        platform_request(PLATFORM_QUIT);
     }
     if (ctrlPressed || altPressed) {
         uint8_t fxPressed = 0;
@@ -283,19 +269,8 @@ __not_in_flash_func(process_kbd_report)(hid_keyboard_report_t const* report, hid
     }
 }
 
-Ps2Kbd_Mrmltr ps2kbd(
-    pio1,
-    PS2KBD_GPIO_FIRST,
-    process_kbd_report
-);
-
-
 uint_fast32_t frames = 0;
 uint64_t start_time;
-
-
-i2s_config_t i2s_config;
-#define AUDIO_FREQ 44100
 
 
 typedef struct __attribute__((__packed__)) {
@@ -323,25 +298,26 @@ int compareFileItems(const void* a, const void* b) {
     return strcmp(itemA->filename, itemB->filename);
 }
 
+/* True when the file extension occurs in extensions ("bin" or "bin,rom").
+ * The former loop called strtok(NULL, ...) without a first strtok() call:
+ * newlib returns NULL there, glibc dereferences its NULL save pointer. */
 bool isExecutable(const char pathname[255],const char *extensions) {
-    char *pathCopy = strdup(pathname);
-    const char* token = strrchr(pathCopy, '.');
+    const char* token = strrchr(pathname, '.');
 
     if (token == nullptr) {
         return false;
     }
 
     token++;
+    return strstr(extensions, token) != nullptr;
+}
 
-    while (token != NULL) {
-        if (strstr(extensions, token) != NULL) {
-            free(pathCopy);
-            return true;
-        }
-        token = strtok(NULL, ",");
-    }
-    free(pathCopy);
-    return false;
+/* Copy src into dst[size], truncated to fit, always NUL-terminated. */
+static void copy_name(char *dst, size_t size, const char *src) {
+    size_t len = strlen(src);
+    if (len >= size) len = size - 1;
+    memcpy(dst, src, len);
+    dst[len] = '\0';
 }
 
 static bool demo_active = false;
@@ -371,7 +347,7 @@ bool filebrowser_loadfile(const char pathname[256]) {
         return false;
     }
     const uint32_t load_size = fileinfo.fsize;
-    if (16384 - 64 << 10 < fileinfo.fsize) {
+    if (fileinfo.fsize > ROM_SPACE_SIZE) {
         show_load_error("ERROR: ROM too large! Canceled!!");
         return false;
     }
@@ -382,71 +358,21 @@ bool filebrowser_loadfile(const char pathname[256]) {
     uint32_t total_read = 0;
     bool load_ok = false;
 
-    if (gamate_psram_available() && gamate_psram_size() != 0) {
-        if (fileinfo.fsize > gamate_psram_size()) {
-            show_load_error("ERROR: ROM too large for PSRAM!");
-            return false;
+    if (FR_OK == f_open(&file, pathname, FA_READ)) {
+        /* Like erased flash past the end of the file. */
+        memset(rom_space, 0xFF, sizeof(rom_space));
+        uint8_t *dst = rom_space;
+        FRESULT read_result;
+        do {
+            const uint32_t left = load_size - total_read;
+            read_result = f_read(&file, dst, left < 4096 ? left : 4096, &bytes_read);
+            dst += bytes_read;
+            total_read += bytes_read;
         }
-
-        if (FR_OK == f_open(&file, pathname, FA_READ)) {
-            uint8_t *dst = (uint8_t *)GAMATE_PSRAM_BASE;
-            FRESULT read_result;
-            do {
-                read_result = f_read(&file, dst, 4096, &bytes_read);
-                dst += bytes_read;
-                total_read += bytes_read;
-            }
-            while (read_result == FR_OK && bytes_read != 0);
-            load_ok = read_result == FR_OK && total_read == load_size;
-            f_close(&file);
-        }
-    } else {
-        if (FR_OK == f_open(&file, pathname, FA_READ)) {
-            multicore_lockout_start_blocking();
-            auto flash_target_offset = FLASH_TARGET_OFFSET;
-            static uint8_t buffer[FLASH_SECTOR_SIZE] __aligned(4);
-            FRESULT read_result;
-            bool flash_verify_failed = false;
-
-            do {
-                memset(buffer, 0xff, sizeof(buffer));
-                read_result = f_read(&file, buffer, sizeof(buffer), &bytes_read);
-                total_read += bytes_read;
-
-                if (read_result == FR_OK && bytes_read) {
-                    const uint8_t *flash_data =
-                        (const uint8_t *)(XIP_BASE + flash_target_offset);
-                    if (memcmp(flash_data, buffer, sizeof(buffer)) != 0) {
-                        const uint32_t ints = save_and_disable_interrupts();
-                        flash_range_erase(flash_target_offset, FLASH_SECTOR_SIZE);
-                        flash_range_program(flash_target_offset, buffer, FLASH_SECTOR_SIZE);
-                        restore_interrupts(ints);
-
-                        if (memcmp(flash_data, buffer, sizeof(buffer)) != 0) {
-                            flash_verify_failed = true;
-                            break;
-                        }
-                    }
-                    gpio_put(PICO_DEFAULT_LED_PIN, flash_target_offset >> 13 & 1);
-                    flash_target_offset += FLASH_SECTOR_SIZE;
-                }
-            }
-            while (read_result == FR_OK && bytes_read != 0);
-
-            gpio_put(PICO_DEFAULT_LED_PIN, true);
-            multicore_lockout_end_blocking();
-            load_ok = !flash_verify_failed && read_result == FR_OK && total_read == load_size;
-            f_close(&file);
-
-            if (flash_verify_failed) {
-                gpio_put(PICO_DEFAULT_LED_PIN, false);
-                show_load_error("ERROR: Flash verify failed!");
-                return false;
-            }
-        }
+        while (read_result == FR_OK && bytes_read != 0 && total_read < load_size);
+        load_ok = read_result == FR_OK && total_read == load_size;
+        f_close(&file);
     }
-
-    gpio_put(PICO_DEFAULT_LED_PIN, false);
 
     if (!load_ok) {
         show_load_error("ERROR: ROM load failed!");
@@ -551,10 +477,8 @@ static bool demo_load_next_rom(const char *after_name) {
         return false;
 
     char after[79] = { 0 };
-    if (after_name && after_name[0]) {
-        strncpy(after, after_name, sizeof(after) - 1);
-        after[sizeof(after) - 1] = '\0';
-    }
+    if (after_name && after_name[0])
+        copy_name(after, sizeof(after), after_name);
 
     while (true) {
         DIR dir;
@@ -570,10 +494,8 @@ static bool demo_load_next_rom(const char *after_name) {
                 continue;
             if (after[0] && strcmp(info.fname, after) <= 0)
                 continue;
-            if (!best[0] || strcmp(info.fname, best) < 0) {
-                strncpy(best, info.fname, sizeof(best) - 1);
-                best[sizeof(best) - 1] = '\0';
-            }
+            if (!best[0] || strcmp(info.fname, best) < 0)
+                copy_name(best, sizeof(best), info.fname);
         }
         f_closedir(&dir);
 
@@ -583,13 +505,11 @@ static bool demo_load_next_rom(const char *after_name) {
         char pathname[256];
         snprintf(pathname, sizeof(pathname), "%s\\%s", HOME_DIR, best);
         if (!filebrowser_loadfile(pathname)) {
-            strncpy(after, best, sizeof(after) - 1);
-            after[sizeof(after) - 1] = '\0';
+            copy_name(after, sizeof(after), best);
             continue;
         }
 
-        strncpy(demo_current_name, best, sizeof(demo_current_name) - 1);
-        demo_current_name[sizeof(demo_current_name) - 1] = '\0';
+        copy_name(demo_current_name, sizeof(demo_current_name), best);
         demo_prepare_title_bitmap();
         demo_game_started_at = time_us_64();
         demo_title_until = demo_game_started_at + 10000000ull;
@@ -615,14 +535,15 @@ void filebrowser(const char pathname[256], const char executables[11]) {
 
     if (FR_OK != f_mount(&fs, "SD", 1)) {
         draw_text("SD Card not inserted or SD Card error!", 0, 0, 12, 0);
-        while (true);
+        while (true) sleep_ms(100);  // Ctrl+Alt+Del / Ctrl+Alt+End still work
     }
 
     while (true) {
         memset(fileItems, 0, sizeof(file_item_t) * max_files);
         int total_files = 0;
 
-        snprintf(tmp, TEXTMODE_COLS, "SD:\\%s", basepath);
+        memcpy(tmp, "SD:\\", 4);
+        copy_name(tmp + 4, TEXTMODE_COLS - 4, basepath);
         draw_window(tmp, 0, 0, TEXTMODE_COLS, TEXTMODE_ROWS - 1);
         memset(tmp, ' ', TEXTMODE_COLS);
 
@@ -647,14 +568,10 @@ void filebrowser(const char pathname[256], const char executables[11]) {
         draw_text(" USB DRV ", off, 29, 0, 3);
         off += 9;
 #endif
-        if (gamate_psram_available() && gamate_psram_size() != 0)
-            draw_text("PSRAM", off, 29, 7, 0);
-        else
-            draw_text("FLASH", off, 29, 7, 0);
 
         if (FR_OK != f_opendir(&dir, basepath)) {
             draw_text("Failed to open directory", 1, 1, 4, 0);
-            while (true);
+            while (true) sleep_ms(100);  // Ctrl+Alt+Del / Ctrl+Alt+End still work
         }
 
         if (strlen(basepath) > 0) {
@@ -672,7 +589,7 @@ void filebrowser(const char pathname[256], const char executables[11]) {
             fileItems[total_files].is_directory = fileInfo.fattrib & AM_DIR;
             fileItems[total_files].size = fileInfo.fsize;
             fileItems[total_files].is_executable = isExecutable(fileInfo.fname, executables);
-            strncpy(fileItems[total_files].filename, fileInfo.fname, 78);
+            copy_name(fileItems[total_files].filename, sizeof(fileItems[total_files].filename), fileInfo.fname);
             total_files++;
         }
         f_closedir(&dir);
@@ -796,21 +713,29 @@ void filebrowser(const char pathname[256], const char executables[11]) {
                         }
                     }
                     else {
-                        sprintf(basepath, "%s\\%s", basepath, file_at_cursor.filename);
+                        const size_t length = strlen(basepath);
+                        snprintf(basepath + length, sizeof(basepath) - length, "\\%s",
+                                 file_at_cursor.filename);
                     }
                     debounce = false;
                     break;
                 }
 
                 if (file_at_cursor.is_executable) {
-                    sprintf(tmp, "%s\\%s", basepath, file_at_cursor.filename);
+                    char rom_path[256];
+                    const int path_len = snprintf(rom_path, sizeof(rom_path), "%s\\%s",
+                                                  basepath, file_at_cursor.filename);
+                    if (path_len < 0 || (size_t)path_len >= sizeof(rom_path)) {
+                        debounce = false;
+                        continue;
+                    }
 
                     replay_start_mode = record_command ? REPLAY_START_RECORD
                                       : play_command ? REPLAY_START_PLAYBACK
                                       : altPressed ? REPLAY_START_RECORD
                                       : ctrlPressed ? REPLAY_START_PLAYBACK
                                                     : REPLAY_START_NONE;
-                    if (filebrowser_loadfile(tmp))
+                    if (filebrowser_loadfile(rom_path))
                         browser_active = false;
                 return;
                     replay_start_mode = REPLAY_START_NONE;
@@ -832,7 +757,7 @@ void filebrowser(const char pathname[256], const char executables[11]) {
                         memset(tmp, 0xCD, TEXTMODE_COLS - 2);
                         tmp[TEXTMODE_COLS - 2] = '\0';
                         draw_text(tmp, 1, per_page + 1, 11, 1);
-                        snprintf(tmp, TEXTMODE_COLS - 2, " Size: %iKb, File %lu of %i ", item.size / 1024,
+                        snprintf(tmp, TEXTMODE_COLS - 2, " Size: %uKb, File %i of %i ", (unsigned)(item.size / 1024),
                                  offset + i + 1,
                                  total_files);
                         draw_text(tmp, 2, per_page + 1, 14, 3);
@@ -874,66 +799,13 @@ enum menu_type_e {
 typedef bool (*menu_callback_t)();
 
 typedef struct __attribute__((__packed__)) {
-    const char* text;
-    menu_type_e type;
-    const void* value;
-    menu_callback_t callback;
-    uint32_t max_value;
-    char value_list[45][20];
+    const char* text = "";
+    menu_type_e type = NONE;
+    const void* value = nullptr;
+    menu_callback_t callback = nullptr;
+    uint32_t max_value = 0;
+    char value_list[45][20] = {};
 } MenuItem;
-
-uint16_t frequencies[] = { 252, 362, 366, 378, 396, 404, 408, 412, 416, 420, 424, 432 };
-#ifdef PICO_RP2040
-    #ifdef CPU_FREQ
-    uint8_t frequency_index = 0;
-    #else
-    uint8_t frequency_index = 3;
-    #endif
-#else
-    #ifdef SOFTTV
-    uint8_t frequency_index = 3;
-    #else
-    uint8_t frequency_index = 0;
-    #endif
-#endif
-
-#ifndef PICO_RP2040
-static void __not_in_flash_func(flash_timings)() {
-        const int max_flash_freq = 88 * MHZ;
-        const int clock_hz = frequencies[frequency_index] * MHZ;
-        int divisor = (clock_hz + max_flash_freq - 1) / max_flash_freq;
-        if (divisor == 1 && clock_hz > 100000000) {
-            divisor = 2;
-        }
-        int rxdelay = divisor;
-        if (clock_hz / divisor > 100000000) {
-            rxdelay += 1;
-        }
-        qmi_hw->m[0].timing = 0x60007000 |
-                            rxdelay << QMI_M0_TIMING_RXDELAY_LSB |
-                            divisor << QMI_M0_TIMING_CLKDIV_LSB;
-}
-#endif
-
-bool __not_in_flash_func(overclock)() {
-#ifndef PICO_RP2040
-    vreg_disable_voltage_limit();
-    vreg_set_voltage(VREG_VOLTAGE_1_60);
-    sleep_ms(33);
-    flash_timings();
-#else
-    hw_set_bits(&vreg_and_chip_reset_hw->vreg, VREG_AND_CHIP_RESET_VREG_VSEL_BITS);
-    sleep_ms(10);
-#endif
-    bool res = set_sys_clock_khz(frequencies[frequency_index] * KHZ, 0);
-    if (res) {
-#if PICO_RP2350
-        gamate_psram_reclock();
-#endif
-        adjust_clk();
-    }
-    return res;
-}
 
 static constexpr uint32_t REPLAY_MAGIC = 0x31524D47u; /* GMR1 */
 static constexpr uint32_t REPLAY_STATE_MAGIC = 0x31534D47u; /* GMS1 */
@@ -1050,8 +922,9 @@ static void replay_update_rec_osd() {
     gamate_demo_title_visible = true;
 }
 
-static void replay_path(char *pathname, size_t size) {
-    snprintf(pathname, size, "/.config/gamate/replay/%s.gmr", filename);
+static bool replay_path(char *pathname, size_t size) {
+    const int len = snprintf(pathname, size, "/.config/gamate/replay/%s.gmr", filename);
+    return len > 0 && (size_t)len < size;
 }
 
 static void replay_mkdirs() {
@@ -1097,8 +970,8 @@ static bool replay_start_recording() {
         return false;
     replay_mkdirs();
     char pathname[256];
-    replay_path(pathname, sizeof(pathname));
-    if (FR_OK != f_open(&replay_file, pathname, FA_CREATE_ALWAYS | FA_WRITE))
+    if (!replay_path(pathname, sizeof(pathname)) ||
+        FR_OK != f_open(&replay_file, pathname, FA_CREATE_ALWAYS | FA_WRITE))
         return false;
 
     replay_header_t header = {};
@@ -1107,7 +980,7 @@ static bool replay_start_recording() {
     header.header_size = sizeof(header);
     header.rom_size = rom_size;
     header.session_id = time_us_64();
-    strncpy(header.rom_name, filename, sizeof(header.rom_name) - 1);
+    copy_name(header.rom_name, sizeof(header.rom_name), filename);
     UINT bytes_written = 0;
     if (FR_OK != f_write(&replay_file, &header, sizeof(header), &bytes_written) || bytes_written != sizeof(header)) {
         f_close(&replay_file);
@@ -1131,8 +1004,8 @@ static bool replay_start_playback() {
     if (FR_OK != f_mount(&fs, "", 1))
         return false;
     char pathname[256];
-    replay_path(pathname, sizeof(pathname));
-    if (FR_OK != f_open(&replay_file, pathname, FA_READ))
+    if (!replay_path(pathname, sizeof(pathname)) ||
+        FR_OK != f_open(&replay_file, pathname, FA_READ))
         return false;
 
     replay_header_t header = {};
@@ -1259,16 +1132,19 @@ static void replay_restore_state(const replay_state_t &state) {
     replay_ignore_launch_enter = false;
 }
 
+static bool state_path(char *pathname, size_t size) {
+    const int len = settings.save_slot > 0
+        ? snprintf(pathname, size, "/.config/gamate/%s_%d.save", filename, settings.save_slot)
+        : snprintf(pathname, size, "/.config/gamate/%s.save", filename);
+    return len > 0 && (size_t)len < size;
+}
+
 bool save() {
     int tmp_data[8];
     char pathname[255];
 #if 1
-    if (settings.save_slot > 0) {
-        snprintf(pathname, sizeof(pathname), "/.config/gamate/%s_%d.save", filename, settings.save_slot);
-    }
-    else {
-        snprintf(pathname, sizeof(pathname), "/.config/gamate/%s.save", filename);
-    }
+    if (!state_path(pathname, sizeof(pathname)))
+        return false;
 
     /* Finish replay metadata and flush the movie BEFORE opening the state
      * file.  FatFs/SD backend must not be asked to sync one open file while
@@ -1307,12 +1183,8 @@ bool load() {
     char pathname[255];
 #if 1
 
-    if (settings.save_slot > 0) {
-        snprintf(pathname, sizeof(pathname), "/.config/gamate/%s_%d.save", filename, settings.save_slot);
-    }
-    else {
-        snprintf(pathname, sizeof(pathname), "/.config/gamate/%s.save", filename);
-    }
+    if (!state_path(pathname, sizeof(pathname)))
+        return false;
 
     FIL fd;
     FRESULT fr = f_open(&fd, pathname, FA_READ);
@@ -1345,17 +1217,7 @@ bool load() {
 }
 
 static const char* config_platform_name() {
-#ifdef PICO_RP2350
-    if (strcmp(PICO_BOARD, "murmulator2") == 0) return "m2p2";
-    if (strcmp(PICO_BOARD, "olimex-pico-pc") == 0) return "pcp2";
-    if (strcmp(PICO_BOARD, "waveshare_rp2350_pizero") == 0) return "z0p2";
-    return "m1p2";
-#else
-    if (strcmp(PICO_BOARD, "murmulator2") == 0) return "m2p1";
-    if (strcmp(PICO_BOARD, "olimex-pico-pc") == 0) return "pcp1";
-    if (strcmp(PICO_BOARD, "waveshare_rp2040_pizero") == 0) return "z0p1";
-    return "m1p1";
-#endif
+    return "orange";
 }
 
 static const char* config_video_name() {
@@ -1541,10 +1403,11 @@ void save_config() {
 static bool game_palette_ini_path(char* pathname, size_t size) {
     if (!game_loaded || !filename[0]) return false;
     char basename[128];
-    snprintf(basename, sizeof(basename), "%s", filename);
+    copy_name(basename, sizeof(basename), filename);
     char* dot = strrchr(basename, '.');
     if (dot && dot != basename) *dot = '\0';
-    return snprintf(pathname, size, "/.config/gamate/%s.ini", basename) > 0;
+    const int len = snprintf(pathname, size, "/.config/gamate/%s.ini", basename);
+    return len > 0 && (size_t)len < size;
 }
 
 static bool game_palette_ini_exists() {
@@ -1688,11 +1551,6 @@ const MenuItem menu_items[] = {
     {},
     { "Save state: %i", INT, &settings.save_slot, &save, 5 },
     { "Load state: %i", INT, &settings.save_slot, &load, 5 },
-{},
-{
-    "Overclocking: %s MHz", ARRAY, &frequency_index, &overclock, count_of(frequencies) - 1,
-    { "252", "362", "366", "378", "396", "404", "408", "412", "416", "420", "424", "432" }
-},
 { "Press START / Enter to apply", NONE },
     { "Start Demo", START_DEMO },
     { "Reset to ROM select", ROM_SELECT },
@@ -1851,8 +1709,8 @@ void menu() {
         blink = !blink;
         bool hex_edit_mode = false;
         int8_t h_code = keyboard.h_code;
-        for (int i = 0; i < MENU_ITEMS_NUMBER; i++) {
-            uint8_t y = i + (TEXTMODE_ROWS - MENU_ITEMS_NUMBER >> 1);
+        for (uint i = 0; i < MENU_ITEMS_NUMBER; i++) {
+            uint8_t y = i + ((TEXTMODE_ROWS - MENU_ITEMS_NUMBER) >> 1);
             uint8_t x = TEXTMODE_COLS / 2 - 10;
             uint8_t color = 0xFF;
             uint8_t bg_color = 0x00;
@@ -2041,6 +1899,7 @@ void menu() {
                     break;
                 case NONE:
                     color = 6;
+                    [[fallthrough]];
                 default:
                     snprintf(result, TEXTMODE_COLS, "%s", item->text);
             }
@@ -2121,25 +1980,18 @@ void menu() {
 
 
 #define AUDIO_FREQ 44100
-#define AUDIO_BUFFER_LENGTH ((AUDIO_FREQ /60 +1) * 2)
-static int16_t audio_buffer[AUDIO_BUFFER_LENGTH] = { 0 };
 
-/* Renderer loop on Pico's second core */
-void __time_critical_func(render_core)() {
-    multicore_lockout_victim_init();
+/* ALSA playback thread: the emulated AY-3-8910, as the RP2350 render core
+ * feeds it to I2S. */
+static void audio_fill(int16_t *frames, unsigned count) {
+    PSG_calc_stereo(&psg, frames, (int32_t)(count * 2));
+}
 
-    tuh_init(BOARD_TUH_RHPORT);
-    ps2kbd.init_gpio();
-    nespad_begin(clock_get_hz(clk_sys) / 1000, NES_GPIO_CLK, NES_GPIO_DATA, NES_GPIO_LAT);
-
+/* Display, sound and controllers: what the RP2350 render core sets up
+ * before the emulation starts. */
+static bool render_init(const char *drm_device) {
     graphics_init();
 
-#ifndef HWAY
-    i2s_config = i2s_get_default_config();
-    i2s_config.sample_freq = AUDIO_FREQ;
-    i2s_config.dma_trans_count = 1 + (AUDIO_FREQ / 60);
-    i2s_volume(&i2s_config, 0);
-    i2s_init(&i2s_config);
 /* Typical AY-3-8910 configuration */
     PSG_init(&psg, 4'433'000 / 4, AUDIO_FREQ);
     PSG_setVolumeMode(&psg, 2); // AY style
@@ -2148,58 +2000,54 @@ void __time_critical_func(render_core)() {
     psg.stereo_mask[0] = 0x01;
     psg.stereo_mask[1] = 0x03;
     psg.stereo_mask[2] = 0x02;
-#else
-    InitAY();
-#endif
 
     const auto buffer = (uint8_t *)SCREEN;
     graphics_set_buffer(buffer, 160, 150);
     graphics_set_textbuffer(buffer);
     graphics_set_bgcolor(0x000000);
-#if VGA
-    graphics_set_offset(0, 0);
-#else
     graphics_set_offset(80, 40);
-#endif
     graphics_set_flashmode(false, false);
-    sem_acquire_blocking(&vga_start_semaphore);
+
+    if (!video_drm_open(drm_device, HDMI_FRAME_WIDTH, HDMI_FRAME_HEIGHT))
+        return false;
+    audio_init(AUDIO_FREQ, audio_fill);
+    input_init();
+    return true;
+}
+
+/* Renderer loop, the role of the RP2350's second core: controllers and
+ * the HDMI picture at 60 Hz. */
+static void *render_core(void *) {
+    static uint32_t frame_pixels[HDMI_FRAME_WIDTH * HDMI_FRAME_HEIGHT];
 
     // 60 FPS loop
     #define frame_tick (16666)
-    uint64_t tick = time_us_64();
-    uint64_t last_frame_tick = tick, last_sound_tick = tick;
+    uint64_t next_frame = time_us_64();
 
     while (true) {
+        input_poll(kbd_linux_event);
+        nespad_tick();
+        platform_service();
 
-        if (tick >= last_frame_tick + frame_tick) {
-#ifdef TFT
-            refresh_lcd();
-#endif
-            ps2kbd.tick();
-            nespad_tick();
+        hdmi_linux_compose(frame_pixels);
+        video_drm_present(frame_pixels, HDMI_FRAME_WIDTH, HDMI_FRAME_HEIGHT);
 
-            last_frame_tick = tick;
-        }
-
-#ifndef HWAY
-        if (tick >= last_sound_tick + (1000000 / AUDIO_FREQ)) {
-            PSG_calc_stereo(&psg, audio_buffer, AUDIO_BUFFER_LENGTH);
-            i2s_dma_write(&i2s_config, audio_buffer);
-            last_sound_tick = tick;
-        }
-#endif
-        tick = time_us_64();
-
-        tuh_task();
-        // hid_app_task();
-        tight_loop_contents();
+        next_frame += frame_tick;
+        const uint64_t now = time_us_64();
+        if (next_frame + frame_tick < now)
+            next_frame = now;   // fell behind by more than a frame: resync
+        sleep_until_us(next_frame);
     }
 
     __unreachable();
 }
 
+static void on_signal(int) {
+    platform_request(PLATFORM_QUIT);
+}
+
 int frame, frame_cnt = 0;
-int frame_timer_start = 0;
+uint64_t frame_timer_start = 0;
 
 extern "C" uint8_t __time_critical_func(Rd6502)(uint16_t address) {
     if (address <= 0x1FFF) {
@@ -2286,29 +2134,39 @@ extern "C" void __time_critical_func(Wr6502)(uint16_t address, uint8_t value) {
 //    exit(1);
 }
 
-byte Loop6502(M6502 *R) {
+byte Loop6502(M6502 *) {
     return INT_QUIT;
 }
 
-int __time_critical_func(main)() {
-    overclock();
-    gpio_init(PICO_DEFAULT_LED_PIN);
-    gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
+int main(int argc, char **argv) {
+    /* gamate [data directory [DRM device]]: the data directory plays the
+     * role of the SD card (GAMATE\ ROMs, .config\gamate\ settings). */
+    const char *root = argc > 1 ? argv[1] : ".";
+    const char *drm_device = argc > 2 ? argv[2] : "/dev/dri/card0";
+    platform_set_argv(argv);
+    ff_set_root(root);
 
-    for (int i = 0; i < 6; i++) {
-        sleep_ms(33);
-        gpio_put(PICO_DEFAULT_LED_PIN, true);
-        sleep_ms(33);
-        gpio_put(PICO_DEFAULT_LED_PIN, false);
+    if (!render_init(drm_device)) {
+        input_shutdown();
+        audio_shutdown();
+        video_drm_close();
+        return EXIT_FAILURE;
     }
-#if PICO_RP2350
-    if (gamate_psram_init() && gamate_psram_size() != 0)
-        ROM = (uint8_t *)GAMATE_PSRAM_BASE;
-#endif
 
-    sem_init(&vga_start_semaphore, 0, 1);
-    multicore_launch_core1(render_core);
-    sem_release(&vga_start_semaphore);
+    struct sigaction sa = {};
+    sa.sa_handler = on_signal;
+    sigaction(SIGINT, &sa, nullptr);
+    sigaction(SIGTERM, &sa, nullptr);
+    sigaction(SIGHUP, &sa, nullptr);
+
+    pthread_t render_thread;
+    if (pthread_create(&render_thread, nullptr, render_core, nullptr) != 0) {
+        perror("render thread");
+        input_shutdown();
+        audio_shutdown();
+        video_drm_close();
+        return EXIT_FAILURE;
+    }
 
     load_config();
     update_palette();
@@ -2537,7 +2395,7 @@ int __time_critical_func(main)() {
 
             if (limit_fps) {
                 if (++frame_cnt == 6) {
-                    while (time_us_64() - frame_timer_start < 16666 * 6);  // 60 Hz
+                    sleep_until_us(frame_timer_start + 16666 * 6);  // 60 Hz
                     frame_timer_start = time_us_64();
                     frame_cnt = 0;
                 }

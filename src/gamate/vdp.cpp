@@ -261,7 +261,8 @@ void __time_critical_func(screen_update)(uint8_t *screen, uint8_t ghosting) {
             uint8_t* p = screen2 + scanline * 160;
             for (int x = 0; x < 160; ++x) {
                 uint8_t b = get_pixel_from_vram(x + real_x, real_y);
-                *p++ = convert_to_rich_format(b, *p, ghost_speed, ghosting);
+                *p = convert_to_rich_format(b, *p, ghost_speed, ghosting);
+                ++p;
             }
         }
     } else {

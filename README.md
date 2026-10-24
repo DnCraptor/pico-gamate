@@ -1,3 +1,70 @@
+# pico-gamate — `orange` branch: ARM64 Linux port
+
+This branch ports the emulator to ARM64 Linux (Orange Pi Zero 2W): video
+through legacy DRM/KMS, sound through ALSA, keyboards and game controllers
+through evdev. No SDL, EGL, OpenGL, X11 or Wayland required. The RP2350
+firmware described further below is built from the `main` branch.
+
+## Dependencies (Debian)
+
+```sh
+sudo apt install build-essential cmake pkg-config libdrm-dev libasound2-dev
+```
+
+## Build
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+```
+
+## Run
+
+Run from a text VT with no compositor controlling the selected DRM device.
+
+```sh
+sudo ./build/gamate [data directory] [DRM device]
+```
+
+The data directory (default: the working directory) plays the role of the
+SD card: ROMs in `GAMATE/`, settings, save states, palettes and replays in
+`.config/gamate/` (settings file `.config/gamate/orange/hdmi/emulator.cfg`).
+File names are matched case-insensitively. The DRM device defaults to
+`/dev/dri/card0`; pass the actual `/dev/dri/cardN` if the KMS card has
+another number.
+
+The picture is the 640x480 frame of the RP2350 HDMI output (4:3, or 1:2
+with the photographic backplane), shown in the HDMI mode that holds it at
+the largest integer scale.
+
+Sound goes to the first of: `AUDIODEV` in the environment, the ALSA card
+`HDMI` (`plughw:CARD=HDMI,DEV=0`), ALSA `default`. `sudo` does not pass a
+previously exported `AUDIODEV` on; put it on the command line
+(`sudo AUDIODEV=... ./build/gamate`).
+
+Keyboards are grabbed exclusively while the emulator runs. Game
+controllers: standard gamepads (BTN_SOUTH = A, BTN_EAST = B, SELECT,
+START, D-pad, hat or left stick) and generic USB joysticks (trigger = A,
+thumb = B, base 3 = SELECT, base 4 = START, hat or X/Y axes).
+
+| Keys | Action |
+|---|---|
+| Ctrl+Alt+Del | Restart the emulator (the RP2350 build resets the MCU) |
+| Ctrl+Alt+End | Quit (also Ctrl+C / SIGTERM from a terminal) |
+
+All other keys work as in the RP2350 firmware. The menu has no
+overclocking item.
+
+## Limits
+
+- Uses the legacy KMS API; assumes dumb buffers and XRGB8888 support.
+- Picks the first connected HDMI-A connector.
+- Restores the original CRTC on normal exit (quit, restart); SIGKILL or a
+  crash cannot restore the display.
+- Needs DRM master access; stop the display manager/compositor first.
+
+---
+
 # pico-gamate
 
 **Bit Corporation Gamate emulator for RP2350-based MURMULATOR systems

@@ -1,247 +1,69 @@
-# == DO NOT EDIT THE FOLLOWING LINES for the Raspberry Pi Pico VS Code Extension to work ==
-if(WIN32)
-    set(USERHOME $ENV{USERPROFILE})
-else()
-    set(USERHOME $ENV{HOME})
-endif()
-set(sdkVersion 2.2.0)
-set(toolchainVersion 14_2_Rel1)
-set(picotoolVersion 2.2.0)
-set(picoVscode ${USERHOME}/.pico-sdk/cmake/pico-vscode.cmake)
-if (EXISTS ${picoVscode})
-    include(${picoVscode})
-endif()
-# ====================================================================================
-cmake_minimum_required(VERSION 3.13)
-set(PICO_BOARD_HEADER_DIRS ${CMAKE_CURRENT_LIST_DIR}/boards )
-#set(PICO_PLATFORM "rp2040" CACHE STRING "Chip type")
-set(PICO_PLATFORM "rp2350" CACHE STRING "Chip type")
-set(PICO_BOARD "murmulator" CACHE STRING "Board type")
-#set(PICO_BOARD "murmulator2" CACHE STRING "Board type")
-#set(PICO_BOARD "olimex-pico-pc" CACHE STRING "Board type")
-#set(PICO_BOARD "waveshare_rp2040_pizero" CACHE STRING "Board type")
-#set(PICO_BOARD "waveshare_rp2350_pizero" CACHE STRING "Board type")
-include(pico_sdk_import.cmake)
-
-project(gamate C CXX ASM)
-SET(BUILD_NAME "${PROJECT_NAME}")
-
-option(I2S "Enable I2S sound" OFF)
-option(HWAY "Enable Hardware AY-3-8910 sound" ON)
-option(I2S_CS4334 "Enable I2S CS4334 sound" OFF)
-option(VGA "Enable VGA" OFF)
-option(TFT "Enable TFT display" OFF)
-option(ILI9341 "Enable TFT ILI9341 display" OFF)
-option(HDMI "Enable HDMI display" ON)
-option(TV "Enable TV composite output" OFF)
-option(SOFTTV "Enable TV soft composite output" OFF)
-if( ${PICO_PLATFORM} MATCHES "rp2350" )
-option(m1p2launcher "Enable m1p2-launcher support" OFF)
-endif()
+cmake_minimum_required(VERSION 3.16)
+# orange branch: Linux ARM64 port (Orange Pi Zero 2W) - DRM/KMS video,
+# ALSA sound, evdev keyboards and game controllers.  The RP2350 firmware
+# is built from the main branch.
+project(gamate VERSION 3.1.2 LANGUAGES C CXX)
 
 set(PROG_VERSION "3.1.2")
 
 set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_STANDARD 17)
-#add_compile_options(-flto)
-set(CMAKE_C_FLAGS   "${CMAKE_C_FLAGS} -funroll-loops  -ffast-math -feliminate-unused-debug-types -ffunction-sections -fdata-sections -Ofast")
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -funroll-loops  -ffast-math -feliminate-unused-debug-types -ffunction-sections -fdata-sections -Ofast")
-
-set(OUTPUT_DIR "${CMAKE_SOURCE_DIR}/bin/${CMAKE_BUILD_TYPE}")
-set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${OUTPUT_DIR}")
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${OUTPUT_DIR}")
-set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${OUTPUT_DIR}")
-
-message(STATUS ">>> PICO_PLATFORM=${PICO_PLATFORM}")
-message(STATUS ">>> PICO_BOARD=${PICO_BOARD}")
-message(STATUS ">>> PICO_BOARD_HEADER_DIRS=${PICO_BOARD_HEADER_DIRS}")
-pico_sdk_init()
-
-add_subdirectory(drivers/audio)
-
-add_subdirectory(drivers/ps2kbd)
-add_subdirectory(drivers/nespad)
-add_subdirectory(drivers/fatfs)
-add_subdirectory(drivers/sdcard)
-
-add_subdirectory(drivers/vga-nextgen)
-add_subdirectory(drivers/st7789)
-add_subdirectory(drivers/hdmi)
-add_subdirectory(drivers/tv)
-add_subdirectory(drivers/tv-software)
-
-add_subdirectory(drivers/graphics)
-
-# INCLUDE FILES THAT SHOULD BE COMPILED:
-file(GLOB_RECURSE SRC "src/*.cpp" "src/*.c")
-
-message(STATUS "Add source files:")
-foreach (SRC_FILE IN LISTS SRC)
-	message(STATUS "${SRC_FILE}")
-endforeach ()
-message(STATUS "")
-
-add_executable(${PROJECT_NAME} ${SRC})
-
-if( ${PICO_PLATFORM} MATCHES "rp2040" )
-	pico_define_boot_stage2(slower_boot2 ${PICO_DEFAULT_BOOT_STAGE2_FILE})
-	target_compile_definitions(slower_boot2 PRIVATE PICO_FLASH_SPI_CLKDIV=4)
-	pico_set_boot_stage2(${PROJECT_NAME} slower_boot2)
-	if ( ${PICO_BOARD} MATCHES "murmulator2")
-		SET(BUILD_NAME "m2p1-${PROJECT_NAME}")
-	elseif( ${PICO_BOARD} MATCHES "olimex-pico-pc")
-		SET(BUILD_NAME "PCp1-${PROJECT_NAME}")
-	elseif( ${PICO_BOARD} MATCHES "waveshare_rp2040_pizero")
-		SET(BUILD_NAME "z0p1-${PROJECT_NAME}")
-	else()
-		SET(BUILD_NAME "m1p1-${PROJECT_NAME}")
-	endif()
-else()
-	if (m1p2launcher)
-		pico_set_linker_script(${PROJECT_NAME} "${CMAKE_SOURCE_DIR}/memmap.ld")
-	endif()
-	if ( ${PICO_BOARD} MATCHES "murmulator2")
-		SET(BUILD_NAME "m2p2-${PROJECT_NAME}")
-	elseif( ${PICO_BOARD} MATCHES "olimex-pico-pc")
-		SET(BUILD_NAME "PCp2-${PROJECT_NAME}")
-	elseif( ${PICO_BOARD} MATCHES "waveshare_rp2350_pizero")
-		SET(BUILD_NAME "z0p2-${PROJECT_NAME}")
-	else()
-		SET(BUILD_NAME "m1p2-${PROJECT_NAME}")
-	endif()
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release)
 endif()
+set(CMAKE_C_FLAGS_RELEASE "-O2 -g")
+set(CMAKE_CXX_FLAGS_RELEASE "-O2 -g")
 
-if ( ${PICO_BOARD} MATCHES "waveshare_rp2350_pizero")
-	pico_set_program_name(gamate "Bit Corp. Gamate emulator by xrip for RP2350-PiZero")
-elseif( ${PICO_BOARD} MATCHES "olimex-pico-pc")
-	pico_set_program_name(gamate "Watara Supervision emulator by xrip for Olimex RP2040-PICO-PC")
-elseif ( ${PICO_BOARD} MATCHES "murmulator2")
-	pico_set_program_name(gamate "Bit Corp. Gamate emulator by xrip for MURMULATOR 2.0 board")
-else()
-	pico_set_program_name(gamate "Bit Corp. Gamate emulator by xrip for MURMULATOR 1.x board")
-endif()
-pico_set_program_version(gamate "${PROG_VERSION}")
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(LIBDRM REQUIRED IMPORTED_TARGET libdrm)
+pkg_check_modules(ALSA REQUIRED IMPORTED_TARGET alsa)
+find_package(Threads REQUIRED)
 
-target_include_directories(${PROJECT_NAME} PRIVATE src)
+add_executable(gamate
+    # Emulator
+    src/main.cpp
+    src/gamate/vdp.cpp
+    src/m6502/m6502.c
+    src/emu2149/emu2149.c
 
-IF(TFT)
-	target_link_libraries(${PROJECT_NAME} PRIVATE st7789)
-	target_compile_definitions(${PROJECT_NAME} PRIVATE TFT)
-	SET(BUILD_NAME "${BUILD_NAME}-TFT")
-	IF(ILI9341)
-		SET(BUILD_NAME "${BUILD_NAME}-ILI9341")
-		target_compile_definitions(${PROJECT_NAME} PRIVATE ILI9341)
-	ELSE()
-		SET(BUILD_NAME "${BUILD_NAME}-ST7789")
-	ENDIF()
-ELSEIF(HDMI)
-	target_link_libraries(${PROJECT_NAME} PRIVATE hdmi)
-	target_compile_definitions(${PROJECT_NAME} PRIVATE HDMI)
-	SET(BUILD_NAME "${BUILD_NAME}-HDMI")
-ELSEIF(TV)
-	target_compile_definitions(${PROJECT_NAME} PRIVATE TV)
-	target_link_libraries(${PROJECT_NAME} PRIVATE tv)
-	SET(BUILD_NAME "${BUILD_NAME}-TV")
-ELSEIF(SOFTTV)
-	target_compile_definitions(${PROJECT_NAME} PRIVATE SOFTTV)
-	target_link_libraries(${PROJECT_NAME} PRIVATE tv-software)
-	SET(BUILD_NAME "${BUILD_NAME}-TV-SOFT")
-ELSE()
+    # Text output helpers shared with the RP2350 build
+    drivers/graphics/graphics.c
 
-	target_compile_definitions(${PROJECT_NAME} PRIVATE VGA)
-	target_link_libraries(${PROJECT_NAME} PRIVATE vga-nextgen)
-	SET(BUILD_NAME "${BUILD_NAME}-VGA")
-ENDIF()
-IF(NOT HWAY)
-	IF(NOT I2S)
-		target_compile_definitions(${PROJECT_NAME} PRIVATE AUDIO_PWM)
-		SET(BUILD_NAME "${BUILD_NAME}-PWM")
-	ELSEIF(I2S_CS4334)
-		target_compile_definitions(${PROJECT_NAME} PRIVATE I2S_CS4334)
-		SET(BUILD_NAME "${BUILD_NAME}-I2S-CS4334")
-	ELSE()
-		SET(BUILD_NAME "${BUILD_NAME}-I2S")
-	ENDIF()
-ELSE()
-	target_compile_definitions(${PROJECT_NAME} PRIVATE HWAY)
-	SET(BUILD_NAME "${BUILD_NAME}-AY-3-8910")
-ENDIF()
-
-IF(m1p2launcher)
-    SET(BUILD_NAME "${BUILD_NAME}-${PROG_VERSION}.m1p2")
-ELSE()
-    SET(BUILD_NAME "${BUILD_NAME}-${PROG_VERSION}")
-ENDIF()
-
-
-set_target_properties(${PROJECT_NAME} PROPERTIES OUTPUT_NAME "${BUILD_NAME}")
-
-target_link_libraries(${PROJECT_NAME} PRIVATE
-		graphics
-		audio
-
-		nespad
-		sdcard
-		ps2kbd
-		fatfs
-
-		pico_runtime
-        pico_stdlib
-        pico_multicore
-        hardware_dma
-        hardware_pio
-        hardware_i2c
-        hardware_interp
-        hardware_timer
-        hardware_clocks
-        hardware_pwm
-        hardware_flash
-
-		tinyusb_host tinyusb_board
+    # Linux host (counterparts of the RP2350 drivers)
+    src/linux/hdmi_linux.c      # HDMI scanline composer (drivers/hdmi)
+    src/linux/video_drm.c       # DRM/KMS output
+    src/linux/audio_linux.c     # ALSA output (I2S)
+    src/linux/input_linux.c     # evdev keyboards and gamepads (PS/2, NES pad)
+    src/linux/kbd_linux.cpp     # key events -> HID keyboard reports
+    src/linux/ff_posix.c        # FatFs API over the data directory (SD card)
+    src/linux/platform_linux.c  # reboot / quit
 )
 
-target_compile_definitions(${PROJECT_NAME} PRIVATE
-		PICO_FLASH_SIZE_BYTES=16777216
-		# SDCARD
-		SDCARD_PIN_SPI0_CS=5
-		SDCARD_PIN_SPI0_SCK=2
-		SDCARD_PIN_SPI0_MOSI=3
-		SDCARD_PIN_SPI0_MISO=4
-
-		# PS2KBD
-		USE_PS2_KBD
-		PS2KBD_GPIO_FIRST=0
-
-		# NES Gamepad
-		USE_NESPAD
-		NES_GPIO_CLK=14
-		NES_GPIO_DATA=16
-		NES_GPIO_LAT=15
-
-		# VGA 8 pins starts from pin:
-		VGA_BASE_PIN=6
-
-		# HDMI 8 pins starts from pin:
-		HDMI_BASE_PIN=6
-
-		# TFT
-		TFT_CS_PIN=6
-		TFT_RST_PIN=8
-		TFT_LED_PIN=9
-		TFT_DC_PIN=10
-		TFT_DATA_PIN=12
-		TFT_CLK_PIN=13
-
-		SMS_SINGLE_FILE=1
+# src/linux first: its pico.h, hdmi.h, nespad.h and ff.h replace the
+# Pico SDK and RP2350 driver headers.
+target_include_directories(gamate PRIVATE
+    src/linux
+    src
+    drivers/graphics
 )
 
-target_link_options(${PROJECT_NAME} PRIVATE -Xlinker --print-memory-usage --data-sections --function-sections)
-pico_add_extra_outputs(${PROJECT_NAME})
+target_compile_definitions(gamate PRIVATE
+    _POSIX_C_SOURCE=200809L
+    _DEFAULT_SOURCE=1
+    ORANGE_GAMATE=1
+    HDMI=1
+    PICO_PROGRAM_NAME="Gamate emulator by xrip for Orange Pi Zero 2W"
+    PICO_PROGRAM_VERSION_STRING="${PROG_VERSION}"
+)
 
-if (m1p2launcher)
-    add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E rename
-        "${OUTPUT_DIR}/${BUILD_NAME}.uf2"
-        "${OUTPUT_DIR}/${BUILD_NAME}"
-    )
-endif ()
+target_compile_options(gamate PRIVATE
+    -Wall
+    -Wextra
+    $<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions>
+    $<$<COMPILE_LANGUAGE:CXX>:-fno-rtti>
+)
+
+target_link_libraries(gamate PRIVATE PkgConfig::LIBDRM PkgConfig::ALSA Threads::Threads)
+install(TARGETS gamate RUNTIME DESTINATION bin)

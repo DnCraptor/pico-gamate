@@ -326,9 +326,7 @@ word __time_critical_func(Run6502)(M6502 *R)
         case 0x2C: MR_Ab(I); M_BIT(I);  break; /* BIT $ssss ABS */
         case 0x2D: MR_Ab(I); M_AND(I);  break; /* AND $ssss ABS */
         case 0x2E: MM_Ab(M_ROL);        break; /* ROL $ssss ABS */
-        case 0x30:
-            if (R->P&N_FLAG) { M_JR; }
-            else R->PC.W++;             break; /* BMI * REL */
+        case 0x30: if (R->P&N_FLAG) { M_JR; } else R->PC.W++; break; /* BMI * REL */
         case 0x31: MR_Iy(I); M_AND(I);  break;       /* AND ($ss),y INDIRINDEX */
 
         case 0x32: MR_Izp(I); M_AND(I); break; /* uso */
@@ -385,8 +383,7 @@ word __time_critical_func(Run6502)(M6502 *R)
             R->PC.B.h = Rd6502(K.W);    break;
         case 0x6D: MR_Ab(I); M_ADC(I);  break; /* ADC $ssss ABS */
         case 0x6E: MM_Ab(M_ROR);        break; /* ROR $ssss ABS */
-        case 0x70: if (R->P&V_FLAG) { M_JR; }
-                   else R->PC.W++;      break; /* BVS * REL */
+        case 0x70: if (R->P&V_FLAG) { M_JR; } else R->PC.W++; break; /* BVS * REL */
         case 0x71: MR_Iy(I); M_ADC(I);  break; /* ADC ($ss),y INDIRINDEX */
         case 0x72: MR_Izp(I); M_ADC(I); break; /* uso */
         case 0x74: MW_Zx(0);            break; /* uso */
@@ -433,8 +430,7 @@ word __time_critical_func(Run6502)(M6502 *R)
         case 0xAC: MR_Ab(R->Y); M_FL(R->Y); break; /* LDY $ssss ABS */
         case 0xAD: MR_Ab(R->A); M_FL(R->A); break; /* LDA $ssss ABS */
         case 0xAE: MR_Ab(R->X); M_FL(R->X); break; /* LDX $ssss ABS */
-        case 0xB0: if (R->P&C_FLAG) { M_JR; }
-                   else R->PC.W++;          break; /* BCS * REL */
+        case 0xB0: if (R->P&C_FLAG) { M_JR; } else R->PC.W++; break; /* BCS * REL */
         case 0xB1: MR_Iy(R->A); M_FL(R->A); break; /* LDA ($ss),y INDIRINDEX */
         case 0xB2: MR_Izp(R->A); M_FL(R->A); break; /* uso */
         case 0xB4: MR_Zx(R->Y); M_FL(R->Y); break; /* LDY $ss,x ZP,x */
@@ -479,8 +475,7 @@ word __time_critical_func(Run6502)(M6502 *R)
         case 0xED: MR_Ab(I); M_SBC(I);       break; /* SBC $ssss ABS */
         case 0xEE: MM_Ab(M_INC);             break; /* INC $ssss ABS */
 
-        case 0xF0: if (R->P&Z_FLAG) { M_JR; }
-                   else R->PC.W++;           break; /* BEQ * REL */
+        case 0xF0: if (R->P&Z_FLAG) { M_JR; } else R->PC.W++; break; /* BEQ * REL */
         case 0xF1: MR_Iy(I); M_SBC(I);       break; /* SBC ($ss),y INDIRINDEX */
         case 0xF2: MR_Izp(I); M_SBC(I);      break; /* uso */
         case 0xF5: MR_Zx(I); M_SBC(I);       break; /* SBC $ss,x ZP,x */
